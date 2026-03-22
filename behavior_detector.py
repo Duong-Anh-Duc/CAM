@@ -33,6 +33,8 @@ from datetime import datetime
 from collections import deque
 import queue
 
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # ─── PIL cho vẽ text Unicode (tiếng Việt có dấu) ────────────────────────────
 from PIL import Image, ImageDraw, ImageFont
 
@@ -382,7 +384,9 @@ class PersonState:
 # AUDIO MANAGER
 # =============================================================================
 class AudioManager:
-    def __init__(self, sound_path: str = "alarm.wav"):
+    def __init__(self, sound_path: str = None):
+        if sound_path is None:
+            sound_path = os.path.join(_BASE_DIR, "alarm.wav")
         self.sound_path  = sound_path
         self._alarm_on   = False
         self._thread     = None
@@ -440,7 +444,9 @@ class AudioManager:
 # YOLO DETECTOR
 # =============================================================================
 class YOLODetector:
-    def __init__(self, model_name: str = "yolov8n.pt"):
+    def __init__(self, model_name: str = None):
+        if model_name is None:
+            model_name = os.path.join(_BASE_DIR, "yolov8n.pt")
         self.model     = None
         self.available = YOLO_AVAILABLE
         if self.available:
@@ -577,7 +583,7 @@ class FacialAnalyzer:
         if self.use_dlib:
             try:
                 self.dlib_detector = dlib.get_frontal_face_detector()
-                dat_path = "models/shape_predictor_68_face_landmarks.dat"
+                dat_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), "models", "shape_predictor_68_face_landmarks.dat")
                 if os.path.exists(dat_path):
                     self.dlib_predictor = dlib.shape_predictor(dat_path)
                 else:
@@ -1315,13 +1321,17 @@ class BehaviorDetector:
 
     def __init__(self,
                  camera_id: int = 0,
-                 sound_path: str = "alarm.wav",
+                 sound_path: str = None,
                  use_yolo: bool = True,
-                 yolo_model: str = "yolov8n.pt",
+                 yolo_model: str = None,
                  show_landmarks: bool = True,
                  show_metrics: bool = True,
                  record_output: bool = False,
                  output_path: str = "output_behavior.avi"):
+        if sound_path is None:
+            sound_path = os.path.join(_BASE_DIR, "alarm.wav")
+        if yolo_model is None:
+            yolo_model = os.path.join(_BASE_DIR, "yolov8n.pt")
 
         print("=" * 65)
         print("  BEHAVIOR DETECTOR v2 – Hệ thống giám sát tập trung học sinh")
@@ -1596,10 +1606,10 @@ if __name__ == "__main__":
         description="Behavior Detector v2 – Giám sát tập trung học sinh")
     parser.add_argument("--camera",       type=int,  default=0)
     parser.add_argument("--no-yolo",      action="store_true")
-    parser.add_argument("--yolo-model",   type=str,  default="yolov8n.pt")
+    parser.add_argument("--yolo-model",   type=str,  default=os.path.join(_BASE_DIR, "yolov8n.pt"))
     parser.add_argument("--record",       action="store_true")
     parser.add_argument("--no-landmarks", action="store_true")
-    parser.add_argument("--sound",        type=str,  default="alarm.wav")
+    parser.add_argument("--sound",        type=str,  default=os.path.join(_BASE_DIR, "alarm.wav"))
     args = parser.parse_args()
 
     detector = BehaviorDetector(

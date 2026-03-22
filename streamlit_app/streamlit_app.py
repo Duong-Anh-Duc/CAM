@@ -1,3 +1,4 @@
+import os
 import streamlit as st
 import cv2
 import mediapipe as mp
@@ -8,6 +9,9 @@ import threading
 import time
 import base64
 
+_STREAMLIT_DIR = os.path.dirname(os.path.abspath(__file__))
+_PROJECT_DIR = os.path.dirname(_STREAMLIT_DIR)
+
 # Eye aspect ratio threshold and consecutive frames
 EAR_THRESHOLD = 0.25
 CONSEC_FRAMES = 20
@@ -17,14 +21,14 @@ def play_alarm():
     try:
         # Try playsound first (Windows)
         from playsound import playsound
-        playsound('alarm.mp3')
+        playsound(os.path.join(_STREAMLIT_DIR, 'alarm.mp3'))
     except ImportError:
         try:
             # Try pygame (macOS/Linux)
             import pygame
             if not pygame.mixer.get_init():
                 pygame.mixer.init()
-            sound = pygame.mixer.Sound('alarm.mp3')
+            sound = pygame.mixer.Sound(os.path.join(_STREAMLIT_DIR, 'alarm.mp3'))
             sound.play()
         except:
             st.warning("Audio alert failed to play - no audio library available.")
@@ -135,7 +139,7 @@ window.addEventListener('beforeinstallprompt', (e) => {
     
     // Show install button
     const installButton = document.createElement('button');
-    installButton.textContent = '📱 Install App';
+    installButton.textContent = 'Install App';
     installButton.style.cssText = `
         position: fixed;
         top: 10px;
@@ -202,7 +206,8 @@ webrtc_streamer(
 )
 
 # Embed alarm.wav to trigger download if needed
-with open("alarm.wav", "rb") as f:
+_alarm_wav_path = os.path.join(_PROJECT_DIR, "alarm.wav")
+with open(_alarm_wav_path, "rb") as f:
     b64 = base64.b64encode(f.read()).decode()
     st.markdown(
         f'<a href="data:audio/wav;base64,{b64}" download="alarm.wav">Download alarm.wav if needed</a>',

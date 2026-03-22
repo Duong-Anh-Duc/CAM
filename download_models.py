@@ -11,7 +11,7 @@ from pathlib import Path
 
 def download_file(url, destination, description):
     """Download file từ URL với progress indicator"""
-    print(f"\n📥 Đang download {description}...")
+    print(f"\nDang download {description}...")
     print(f"   URL: {url}")
     print(f"   Đích: {destination}")
     
@@ -22,27 +22,27 @@ def download_file(url, destination, description):
             print(f"\r   Progress: {percent:.1f}% ({downloaded/1024/1024:.1f}MB / {total_size/1024/1024:.1f}MB)", end='')
         
         urllib.request.urlretrieve(url, destination, show_progress)
-        print(f"\n✅ Download thành công!")
+        print(f"\n[OK] Download thanh cong!")
         return True
     except Exception as e:
-        print(f"\n❌ Lỗi khi download: {e}")
+        print(f"\n[LOI] Loi khi download: {e}")
         return False
 
 def decompress_bz2(source, destination):
     """Giải nén file .bz2"""
-    print(f"\n📦 Đang giải nén file...")
+    print(f"\nDang giai nen file...")
     try:
         with bz2.BZ2File(source, 'rb') as src:
             with open(destination, 'wb') as dest:
                 shutil.copyfileobj(src, dest)
-        print("✅ Giải nén thành công!")
+        print("[OK] Giai nen thanh cong!")
         
         # Xóa file .bz2 sau khi giải nén
         os.remove(source)
-        print(f"🗑️  Đã xóa file nén: {source}")
+        print(f"Da xoa file nen: {source}")
         return True
     except Exception as e:
-        print(f"❌ Lỗi khi giải nén: {e}")
+        print(f"[LOI] Loi khi giai nen: {e}")
         return False
 
 def check_file_exists(filepath):
@@ -61,7 +61,8 @@ def main():
     print("="*70)
     
     # Tạo thư mục models nếu chưa có
-    models_dir = Path("models")
+    script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
+    models_dir = script_dir / "models"
     models_dir.mkdir(exist_ok=True)
     
     # Model cần download
@@ -77,13 +78,13 @@ def main():
         }
     ]
     
-    print("\n📋 Kiểm tra trạng thái models...\n")
+    print("\nKiem tra trang thai models...\n")
     
     models_to_download = []
     
     for model in models:
-        status = "✅ ĐÃ CÓ" if check_file_exists(model["path"]) else "❌ THIẾU"
-        required_text = "⚠️  BẮT BUỘC" if model["required"] else "Tùy chọn"
+        status = "[OK] DA CO" if check_file_exists(model["path"]) else "[X] THIEU"
+        required_text = "[!] BAT BUOC" if model["required"] else "Tuy chon"
         
         print(f"{status} | {model['name']}")
         print(f"        {required_text} - {model['description']}")
@@ -97,18 +98,18 @@ def main():
         print()
     
     if not models_to_download:
-        print("✅ Tất cả models cần thiết đã có sẵn!")
-        print("🎉 Bạn có thể chạy ứng dụng ngay bây giờ!")
+        print("[OK] Tat ca models can thiet da co san!")
+        print("Ban co the chay ung dung ngay bay gio!")
         return
     
-    print(f"\n⚠️  Cần download {len(models_to_download)} model(s)\n")
+    print(f"\n[!] Can download {len(models_to_download)} model(s)\n")
     
     # Hỏi người dùng có muốn download không
     response = input("Bạn có muốn download các models này không? (y/n): ").lower().strip()
     
     if response not in ['y', 'yes', 'có', 'c']:
-        print("\n❌ Đã hủy download.")
-        print("⚠️  Lưu ý: Ứng dụng sẽ KHÔNG chạy được nếu thiếu models bắt buộc!")
+        print("\n[X] Da huy download.")
+        print("[!] Luu y: Ung dung se KHONG chay duoc neu thieu models bat buoc!")
         return
     
     # Download từng model
@@ -126,23 +127,23 @@ def main():
         
         if check_file_exists(model["path"]):
             size = get_file_size(model["path"])
-            print(f"✅ File đã sẵn sàng: {model['path']} ({size})")
+            print(f"[OK] File da san sang: {model['path']} ({size})")
     
     print("\n" + "="*70)
     if success_count == len(models_to_download):
-        print("🎉 ĐÃ DOWNLOAD THÀNH CÔNG TẤT CẢ MODELS!")
-        print("✅ Bạn có thể chạy ứng dụng bằng lệnh: python main.py")
+        print("DA DOWNLOAD THANH CONG TAT CA MODELS!")
+        print("[OK] Ban co the chay ung dung bang lenh: python main.py")
     else:
-        print(f"⚠️  Đã download thành công {success_count}/{len(models_to_download)} models")
-        print("❌ Một số models download thất bại. Vui lòng thử lại.")
+        print(f"[!] Da download thanh cong {success_count}/{len(models_to_download)} models")
+        print("[LOI] Mot so models download that bai. Vui long thu lai.")
     print("="*70)
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\n⚠️  Đã hủy download bởi người dùng.")
+        print("\n\n[!] Da huy download boi nguoi dung.")
     except Exception as e:
-        print(f"\n❌ Lỗi không xác định: {e}")
+        print(f"\n[LOI] Loi khong xac dinh: {e}")
         import traceback
         traceback.print_exc()

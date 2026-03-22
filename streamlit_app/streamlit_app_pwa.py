@@ -4,6 +4,7 @@ Enhanced Streamlit App with PWA Support
 This version includes proper static file serving for PWA assets
 """
 
+import os
 import streamlit as st
 import cv2
 import mediapipe as mp
@@ -13,6 +14,8 @@ import av
 import threading
 import time
 import base64
+
+_STREAMLIT_DIR = os.path.dirname(os.path.abspath(__file__))
 import os
 import mimetypes
 from pathlib import Path
@@ -134,7 +137,7 @@ def serve_pwa_files():
         // Install prompt
         let deferredPrompt;
         const installButton = document.createElement('button');
-        installButton.textContent = '📱 Install App';
+        installButton.textContent = 'Install App';
         installButton.className = 'install-button';
         
         window.addEventListener('beforeinstallprompt', (e) => {
@@ -161,7 +164,7 @@ def serve_pwa_files():
             const iosInstall = document.createElement('div');
             iosInstall.innerHTML = `
                 <div style="position: fixed; bottom: 20px; left: 20px; right: 20px; background: #ff6b6b; color: white; padding: 15px; border-radius: 8px; text-align: center; z-index: 1000;">
-                    📱 Install this app: Tap <strong>Share</strong> then <strong>Add to Home Screen</strong>
+                    Install this app: Tap <strong>Share</strong> then <strong>Add to Home Screen</strong>
                     <button onclick="this.parentElement.remove()" style="position: absolute; top: 5px; right: 10px; background: none; border: none; color: white; font-size: 16px;">×</button>
                 </div>
             `;
@@ -185,14 +188,14 @@ def play_alarm():
     try:
         # Try playsound first (Windows)
         from playsound import playsound
-        playsound('alarm.mp3')
+        playsound(os.path.join(_STREAMLIT_DIR, 'alarm.mp3'))
     except ImportError:
         try:
             # Try pygame (macOS/Linux)
             import pygame
             if not pygame.mixer.get_init():
                 pygame.mixer.init()
-            sound = pygame.mixer.Sound('alarm.mp3')
+            sound = pygame.mixer.Sound(os.path.join(_STREAMLIT_DIR, 'alarm.mp3'))
             sound.play()
         except:
             st.warning("Audio alert failed to play - no audio library available.")
@@ -269,7 +272,7 @@ def main():
     st.set_page_config(
         page_title="Driver Drowsiness Detection", 
         layout="centered",
-        page_icon="🚗",
+        page_icon="",
         initial_sidebar_state="collapsed"
     )
     
@@ -277,33 +280,33 @@ def main():
     serve_pwa_files()
     
     # App header
-    st.title("🚗 Driver Drowsiness Detection")
+    st.title("Driver Drowsiness Detection")
     st.markdown("**Real-time drowsiness detection using computer vision**")
     
     # PWA status indicator
     col1, col2 = st.columns([3, 1])
     with col2:
-        if st.button("ℹ️ PWA Info"):
+        if st.button("PWA Info"):
             st.info("This app supports offline use when installed!")
     
     # Installation guide
-    with st.expander("📱 Install as Mobile App", expanded=False):
+    with st.expander("Install as Mobile App", expanded=False):
         st.markdown("""
         ### Install this Progressive Web App for the best experience:
         
-        **📱 On Mobile:**
+        **On Mobile:**
         - **Chrome/Edge**: Tap menu → "Add to Home Screen"
         - **Safari**: Tap share → "Add to Home Screen"
         
-        **💻 On Desktop:**
+        **On Desktop:**
         - **Chrome/Edge**: Click install icon in address bar
         - Or look for "Install App" button
         
-        **✨ Benefits:**
-        - 🚀 Faster loading
-        - 📱 App-like experience
-        - 🔒 Works offline
-        - 💾 Cached for speed
+        **Benefits:**
+        - Faster loading
+        - App-like experience
+        - Works offline
+        - Cached for speed
         """)
     
     # Main camera interface
@@ -328,12 +331,12 @@ def main():
     with col2:
         st.metric("Alert Frames", f"{CONSEC_FRAMES}")
     with col3:
-        st.metric("Status", "🟢 Ready")
+        st.metric("Status", "Ready")
     
     # Footer with PWA info
     st.markdown("---")
     st.markdown(
-        "<small>💡 **Tip**: Install this app for offline access and better performance!</small>", 
+        "<small>**Tip**: Install this app for offline access and better performance!</small>", 
         unsafe_allow_html=True
     )
 

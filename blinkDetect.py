@@ -5,6 +5,7 @@ Created on Tue Oct 29 19:51:37 2019
 @author: Lenovo
 """
 
+import os
 import dlib
 import sys
 import cv2
@@ -34,11 +35,13 @@ RESIZE_HEIGHT = 460
 
 thresh = 0.27
 
+_BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+
 # IMPORTANT: You must download the shape_predictor_68_face_landmarks.dat file from
 # https://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2
 # and place it in the 'models' folder
-modelPath = "models/shape_predictor_68_face_landmarks.dat"
-sound_path = "alarm.wav"
+modelPath = os.path.join(_BASE_DIR, "models", "shape_predictor_68_face_landmarks.dat")
+sound_path = os.path.join(_BASE_DIR, "alarm.wav")
 
 detector = dlib.get_frontal_face_detector()
 predictor = dlib.shape_predictor(modelPath)

@@ -120,8 +120,45 @@ def run_behavior_detector(btn=None, use_yolo=True):
                 btn.config(text=orig_text)
     threading.Thread(target=check_proc, daemon=True).start()
 
+def _find_python_with_torch():
+    """Tìm Python interpreter có thể chạy torch (cross-platform)."""
+    import shutil
+    import platform
+
+    # Ưu tiên Python hiện tại (nếu đã cài torch)
+    try:
+        result = subprocess.run(
+            [sys.executable, "-c", "import torch; print('ok')"],
+            capture_output=True, text=True, timeout=10)
+        if result.returncode == 0:
+            return sys.executable
+    except Exception:
+        pass
+
+    # Trên Windows thử python, py -3.12, py -3.11, py -3.10
+    if platform.system() == "Windows":
+        candidates = ["python", "py -3.12", "py -3.11", "py -3.10"]
+    else:
+        candidates = ["python3.12", "python3.11", "python3.10", "python3"]
+
+    for cmd in candidates:
+        parts = cmd.split()
+        exe = shutil.which(parts[0])
+        if exe:
+            try:
+                full_cmd = [exe] + parts[1:] + ["-c", "import torch; print('ok')"]
+                result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=10)
+                if result.returncode == 0:
+                    return " ".join([exe] + parts[1:]) if len(parts) > 1 else exe
+            except Exception:
+                continue
+
+    # Fallback: trả về python hiện tại
+    return sys.executable
+
+
 def run_resnet_detection(btn=None):
-    """Chạy phát hiện ngủ gật bằng ResNet50 AI (dùng python3.12 vì torch chưa hỗ trợ 3.14)."""
+    """Chạy phát hiện ngủ gật bằng ResNet50 AI."""
     global resnet_proc
     orig_text = "Phat hien Ngu Gat (ResNet50 AI)"
     if resnet_proc and resnet_proc.poll() is None:
@@ -130,16 +167,14 @@ def run_resnet_detection(btn=None):
         if btn:
             btn.config(text=orig_text)
         return
-    # Tìm python3.12 (cần thiết vì torch chỉ hỗ trợ Python ≤ 3.12)
-    import shutil
-    py312 = shutil.which("python3.12") or "/opt/homebrew/bin/python3.12"
+    py_exe = _find_python_with_torch()
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resnet_detector.py")
     if not os.path.exists(script):
         messagebox.showerror("Loi", f"Khong tim thay: {script}")
         return
     try:
-        proc = subprocess.Popen([py312, script],
-                                stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        cmd = py_exe.split() + [script] if " " in py_exe else [py_exe, script]
+        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception as e:
         messagebox.showerror("Loi", f"Khong the khoi dong ResNet detector:\n{e}")
         return

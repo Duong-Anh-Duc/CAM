@@ -42,9 +42,8 @@ from torchvision.models import resnet50, ResNet50_Weights
 import kagglehub
 
 # ── Cấu hình ──────────────────────────────────────────────────────
-MODEL_SAVE_PATH = os.path.join(os.path.dirname(__file__), "models", "resnet_drowsiness.pth")
-# Dataset đã có sẵn local (tải bởi kagglehub trước đó)
-LOCAL_DATASET   = "/Users/anhduc/.cache/kagglehub/datasets/akashshingha850/mrl-eye-dataset/versions/4/data"
+_DIR            = os.path.dirname(os.path.abspath(__file__))
+MODEL_SAVE_PATH = os.path.join(_DIR, "models", "resnet_drowsiness.pth")
 IMG_SIZE        = 224
 BATCH_SIZE      = 32
 EPOCHS          = 5
@@ -54,10 +53,14 @@ LR              = 1e-3
 # ── Tải dataset ───────────────────────────────────────────────────
 def get_dataset_root() -> str:
     """Trả về đường dẫn thư mục chứa train/val (ưu tiên local cache)."""
-    # 1. Dùng local cache nếu có sẵn
-    if os.path.isdir(LOCAL_DATASET) and os.path.isdir(os.path.join(LOCAL_DATASET, "train")):
-        print(f"[1/4] Dataset co san tai: {LOCAL_DATASET}")
-        return LOCAL_DATASET
+    # 1. Kiểm tra kagglehub cache mặc định (cross-platform)
+    default_cache = Path(os.path.expanduser("~")) / ".cache" / "kagglehub" / "datasets" / "akashshingha850" / "mrl-eye-dataset"
+    if default_cache.exists():
+        for version_dir in sorted(default_cache.iterdir(), reverse=True):
+            candidate = version_dir / "data"
+            if (candidate / "train").is_dir():
+                print(f"[1/4] Dataset co san tai: {candidate}")
+                return str(candidate)
 
     # 2. Tải từ Kaggle nếu chưa có
     print("[1/4] Dang tai MRL Eye Dataset tu Kaggle...")

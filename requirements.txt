@@ -22,9 +22,9 @@ scipy>=1.10.0
 # --- Image Processing (GUI + PIL overlay) ---
 Pillow>=9.0.0
 
-# --- Audio ---
-pygame>=2.1.0; platform_system != "Windows"
-playsound>=1.2.2; platform_system == "Windows"
+# --- Audio (cài cả hai, code tự chọn cái nào khả dụng) ---
+pygame>=2.1.0
+playsound>=1.2.2
 
 # --- Object Detection (YOLOv8) ---
 ultralytics>=8.0.0
