@@ -59,11 +59,11 @@ def get_dataset_root() -> str:
         for version_dir in sorted(default_cache.iterdir(), reverse=True):
             candidate = version_dir / "data"
             if (candidate / "train").is_dir():
-                print(f"[1/4] Dataset co san tai: {candidate}")
+                print(f"[1/4] Dataset có sẵn tại: {candidate}")
                 return str(candidate)
 
     # 2. Tải từ Kaggle nếu chưa có
-    print("[1/4] Dang tai MRL Eye Dataset tu Kaggle...")
+    print("[1/4] Đang tải MRL Eye Dataset từ Kaggle...")
     import kagglehub
     path = kagglehub.dataset_download("akashshingha850/mrl-eye-dataset")
     print(f"      Cache path: {path}")
@@ -76,7 +76,7 @@ def get_dataset_root() -> str:
         if p.is_dir():
             return str(p.parent)
     raise FileNotFoundError(
-        f"Khong tim thay thu muc 'train' trong dataset tai: {path}"
+        f"Không tìm thấy thư mục 'train' trong dataset tại: {path}"
     )
 
 

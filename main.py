@@ -13,6 +13,9 @@ app_gui_proc = None
 resnet_proc = None
 is_dark_mode = False  # Tracks current theme state
 
+# Exit codes bình thường khi user tự thoát (q/ESC/đóng cửa sổ/terminate)
+_NORMAL_EXIT_CODES = {0, None, -2, -9, -15, 1, -1, 255}
+
 
 def _start_proc(script, args_extra=None):
     """Khởi chạy script con, trả về Popen object."""
@@ -108,7 +111,7 @@ def run_behavior_detector(btn=None, use_yolo=True):
     def check_proc():
         try:
             stdout, stderr = proc.communicate()
-            if proc.returncode not in (0, None, -15):
+            if proc.returncode not in _NORMAL_EXIT_CODES:
                 err = stderr.decode(errors='replace') if stderr else "Unknown error"
                 if "KeyboardInterrupt" not in err:
                     messagebox.showerror("Lỗi Behavior Detector",
@@ -160,7 +163,7 @@ def _find_python_with_torch():
 def run_resnet_detection(btn=None):
     """Chạy phát hiện ngủ gật bằng ResNet50 AI."""
     global resnet_proc
-    orig_text = "Phat hien Ngu Gat (ResNet50 AI)"
+    orig_text = "Phát hiện Ngủ Gật (ResNet50 AI)"
     if resnet_proc and resnet_proc.poll() is None:
         resnet_proc.terminate()
         resnet_proc = None
@@ -170,25 +173,25 @@ def run_resnet_detection(btn=None):
     py_exe = _find_python_with_torch()
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resnet_detector.py")
     if not os.path.exists(script):
-        messagebox.showerror("Loi", f"Khong tim thay: {script}")
+        messagebox.showerror("Lỗi", f"Không tìm thấy: {script}")
         return
     try:
         cmd = py_exe.split() + [script] if " " in py_exe else [py_exe, script]
         proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception as e:
-        messagebox.showerror("Loi", f"Khong the khoi dong ResNet detector:\n{e}")
+        messagebox.showerror("Lỗi", f"Không thể khởi động ResNet detector:\n{e}")
         return
     resnet_proc = proc
     if btn:
-        btn.config(text=f"DUNG – {orig_text}")
+        btn.config(text=f"DỪNG – {orig_text}")
     def check_proc():
         try:
             stdout, stderr = proc.communicate()
-            if proc.returncode not in (0, None, -15):
+            if proc.returncode not in _NORMAL_EXIT_CODES:
                 err = stderr.decode(errors="replace") if stderr else ""
                 if "KeyboardInterrupt" not in err and err.strip():
-                    messagebox.showerror("Loi ResNet Detector",
-                        f"Thoat voi code {proc.returncode}:\n{err[-600:]}")
+                    messagebox.showerror("Lỗi ResNet Detector",
+                        f"Thoát với code {proc.returncode}:\n{err[-600:]}")
         except Exception:
             pass
         finally:
@@ -340,14 +343,14 @@ def main():
     lbl_resnet.grid(row=10, column=0, columnspan=2)
 
     btn_resnet = ttk.Button(frame,
-        text="Phat hien Ngu Gat (ResNet50 AI)",
+        text="Phát hiện Ngủ Gật (ResNet50 AI)",
         style="Accent.TButton")
     btn_resnet.config(command=lambda: run_resnet_detection(btn_resnet))
     btn_resnet.grid(row=11, column=0, columnspan=2,
                     padx=10, pady=6, sticky="ew")
 
     lbl_resnet_note = tk.Label(frame,
-        text="Can chay train_resnet.py truoc de tao model | q/ESC=thoat  r=reset",
+        text="Cần chạy train_resnet.py trước để tạo model | q/ESC=thoát  r=reset",
         font=('Segoe UI', 8), bg="#f0f0f0", fg="#888888")
     lbl_resnet_note.grid(row=12, column=0, columnspan=2, pady=(0, 4))
 
@@ -368,4 +371,8 @@ def main():
     root.mainloop()
 
 if __name__ == "__main__":
+    # Kiểm tra license trước khi chạy app
+    from license_manager import check_or_prompt
+    if not check_or_prompt():
+        sys.exit(0)
     main()

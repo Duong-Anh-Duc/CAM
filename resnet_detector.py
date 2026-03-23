@@ -23,6 +23,56 @@ import threading
 
 import cv2
 import numpy as np
+from PIL import Image, ImageDraw, ImageFont
+
+
+def _find_font(size=18):
+    """Tìm font hỗ trợ tiếng Việt trên hệ thống."""
+    font_paths = [
+        # macOS
+        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+        "/System/Library/Fonts/Supplemental/Arial.ttf",
+        "/System/Library/Fonts/Helvetica.ttc",
+        # Linux
+        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+        # Windows
+        "C:/Windows/Fonts/arial.ttf",
+        "C:/Windows/Fonts/segoeui.ttf",
+    ]
+    for fp in font_paths:
+        if os.path.exists(fp):
+            try:
+                return ImageFont.truetype(fp, size)
+            except Exception:
+                pass
+    return ImageFont.load_default()
+
+
+_FONT_CACHE: dict[int, ImageFont.FreeTypeFont] = {}
+
+
+def _get_font(size=18):
+    if size not in _FONT_CACHE:
+        _FONT_CACHE[size] = _find_font(size)
+    return _FONT_CACHE[size]
+
+
+def put_vn_text(frame, text, pos, font_size=18, color=(255, 255, 255),
+                bg_color=None):
+    """Vẽ text Unicode (tiếng Việt) lên frame OpenCV bằng PIL."""
+    pil_img = Image.fromarray(cv2.cvtColor(frame, cv2.COLOR_BGR2RGB))
+    draw = ImageDraw.Draw(pil_img)
+    font = _get_font(font_size)
+    if bg_color:
+        bbox = draw.textbbox(pos, text, font=font)
+        pad = 3
+        draw.rectangle(
+            [bbox[0] - pad, bbox[1] - pad, bbox[2] + pad, bbox[3] + pad],
+            fill=bg_color)
+    draw.text(pos, text, font=font, fill=color)
+    result = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
+    np.copyto(frame, result)
+
 
 # ── Kiểm tra thư viện ─────────────────────────────────────────────
 def _check_deps():
@@ -36,16 +86,13 @@ def _check_deps():
         # Hiển thị lỗi qua OpenCV window (vì chạy dưới subprocess)
         blank = np.zeros((300, 700, 3), dtype=np.uint8)
         lines = [
-            "THIEU THU VIEN:",
-            f"  {', '.join(missing)}",
+            f"Thiếu thư viện: {', '.join(missing)}",
             "",
-            "Cai dat:",
-            f"  pip install {' '.join(missing)}",
+            f"Cài đặt: pip install {' '.join(missing)}",
         ]
         for i, line in enumerate(lines):
-            cv2.putText(blank, line, (20, 50 + i * 40),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 100, 255), 2)
-        cv2.imshow("ResNet Detector - LOI", blank)
+            put_vn_text(blank, line, (20, 30 + i * 40), font_size=18, color=(100, 100, 255))
+        cv2.imshow("ResNet Detector - Lỗi", blank)
         cv2.waitKey(0)
         sys.exit(1)
 
@@ -128,9 +175,9 @@ class AudioManager:
 def load_model(path: str, device):
     if not os.path.exists(path):
         raise FileNotFoundError(
-            f"Khong tim thay ResNet model: {path}\n"
-            f"Hay chay: python train_resnet.py\n"
-            f"(Training mat khoang 15-25 phut tren Apple Silicon)"
+            f"Không tìm thấy ResNet model: {path}\n"
+            f"Hãy chạy: python train_resnet.py\n"
+            f"(Training mất khoảng 15-25 phút)"
         )
 
     # weights_only=False vì checkpoint chứa dict (class_to_idx) ngoài tensor
@@ -214,8 +261,8 @@ def draw_prob_bar(frame, x, y, w, h, prob, label):
     color = (0, 0, 255) if prob > 0.5 else (0, 200, 0)
     cv2.rectangle(frame, (x, y), (x + fill, y + h), color, -1)
     cv2.rectangle(frame, (x, y), (x + w, y + h), (200, 200, 200), 1)
-    cv2.putText(frame, f"{label}: {prob*100:.1f}%", (x + 4, y + h - 3),
-                cv2.FONT_HERSHEY_SIMPLEX, 0.4, (255, 255, 255), 1)
+    put_vn_text(frame, f"{label}: {prob*100:.1f}%", (x + 4, y + 2),
+                font_size=14, color=(255, 255, 255))
 
 
 # ── Main loop ─────────────────────────────────────────────────────
@@ -235,20 +282,17 @@ def main():
     except FileNotFoundError as e:
         blank = np.zeros((360, 760, 3), dtype=np.uint8)
         for i, line in enumerate(str(e).split("\n")):
-            cv2.putText(blank, line, (20, 60 + i * 50),
-                        cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 100, 255), 2)
-        cv2.imshow("ResNet Detector - LOI", blank)
+            put_vn_text(blank, line, (20, 40 + i * 50), font_size=18, color=(100, 100, 255))
+        cv2.imshow("ResNet Detector - Lỗi", blank)
         cv2.waitKey(0)
         sys.exit(1)
 
     # Load dlib
     if not os.path.exists(DLIB_PATH):
         blank = np.zeros((200, 700, 3), dtype=np.uint8)
-        cv2.putText(blank, f"Khong tim thay: {DLIB_PATH}", (20, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 100, 255), 2)
-        cv2.putText(blank, "Hay chay: python download_models.py", (20, 110),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.65, (0, 200, 255), 2)
-        cv2.imshow("ResNet Detector - LOI", blank)
+        put_vn_text(blank, f"Không tìm thấy: {DLIB_PATH}", (20, 40), font_size=18, color=(100, 100, 255))
+        put_vn_text(blank, "Hãy chạy: python download_models.py", (20, 90), font_size=18, color=(255, 200, 0))
+        cv2.imshow("ResNet Detector - Lỗi", blank)
         cv2.waitKey(0)
         sys.exit(1)
 
@@ -285,7 +329,7 @@ def main():
         faces = detector(gray, 0)
 
         # ── Mặc định nếu không có mặt ──────────────────────────────
-        status_text  = "Khong phat hien khuon mat"
+        status_text  = "Không phát hiện khuôn mặt"
         status_color = (0, 165, 255)
         both_closed  = False
 
@@ -329,10 +373,10 @@ def main():
                 status_text  = f"!!! MICROSLEEP ({closed_dur:.1f}s) !!!"
                 status_color = (0, 0, 220)
             elif closed_dur >= DROWSY_SECS:
-                status_text  = f"!!! CANH BAO NGU GAT ({closed_dur:.1f}s) !!!"
+                status_text  = f"!!! CẢNH BÁO NGỦ GẬT ({closed_dur:.1f}s) !!!"
                 status_color = (0, 0, 255)
             else:
-                status_text  = f"Mat dang nhep ({closed_dur:.1f}s)..."
+                status_text  = f"Mắt đang nhép ({closed_dur:.1f}s)..."
                 status_color = (0, 165, 255)
 
             if closed_dur >= DROWSY_SECS and not alarm_on:
@@ -342,7 +386,7 @@ def main():
             eyes_closed_since = None
             if len(faces) > 0:
                 avg_prob = (left_prob_ema + right_prob_ema) / 2
-                status_text  = f"Tinh tao  |  Prob nham: {avg_prob*100:.1f}%"
+                status_text  = f"Tỉnh táo  |  Prob nhắm: {avg_prob*100:.1f}%"
                 status_color = (0, 200, 0)
             if alarm_on:
                 audio.stop()
@@ -354,19 +398,19 @@ def main():
         cv2.rectangle(overlay, (0, 0), (frame.shape[1], 80), (0, 0, 0), -1)
         frame = cv2.addWeighted(overlay, 0.55, frame, 0.45, 0)
 
-        cv2.putText(frame, "ResNet AI - Phat hien Ngu Gat", (10, 20),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.55, (200, 200, 200), 1)
-        cv2.putText(frame, status_text, (10, 60),
-                    cv2.FONT_HERSHEY_SIMPLEX, 0.72, status_color, 2)
+        put_vn_text(frame, "ResNet AI - Phát hiện Ngủ Gật", (10, 4),
+                    font_size=16, color=(200, 200, 200))
+        put_vn_text(frame, status_text, (10, 35),
+                    font_size=22, color=status_color[::-1])  # BGR→RGB
 
         # Thanh xác suất mắt trái / phải
         bw = int(frame.shape[1] / 2) - 30
         draw_prob_bar(frame, 10, frame.shape[0] - 28, bw, 22,
-                      left_prob_ema,  "Mat trai")
+                      left_prob_ema,  "Mắt trái")
         draw_prob_bar(frame, bw + 30, frame.shape[0] - 28, bw, 22,
-                      right_prob_ema, "Mat phai")
+                      right_prob_ema, "Mắt phải")
 
-        cv2.imshow("ResNet AI - Phat hien Ngu Gat  (q=thoat, r=reset)", frame)
+        cv2.imshow("Phát hiện Ngủ Gật - ResNet AI  (q=thoát, r=reset)", frame)
 
         key = cv2.waitKey(1) & 0xFF
         if key in (ord("q"), 27):   # q hoặc ESC

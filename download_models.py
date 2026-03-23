@@ -11,38 +11,38 @@ from pathlib import Path
 
 def download_file(url, destination, description):
     """Download file từ URL với progress indicator"""
-    print(f"\nDang download {description}...")
+    print(f"\nĐang download {description}...")
     print(f"   URL: {url}")
     print(f"   Đích: {destination}")
-    
+
     try:
         def show_progress(block_num, block_size, total_size):
             downloaded = block_num * block_size
             percent = min(100, downloaded * 100 / total_size) if total_size > 0 else 0
-            print(f"\r   Progress: {percent:.1f}% ({downloaded/1024/1024:.1f}MB / {total_size/1024/1024:.1f}MB)", end='')
-        
+            print(f"\r   Tiến trình: {percent:.1f}% ({downloaded/1024/1024:.1f}MB / {total_size/1024/1024:.1f}MB)", end='')
+
         urllib.request.urlretrieve(url, destination, show_progress)
-        print(f"\n[OK] Download thanh cong!")
+        print(f"\n[OK] Download thành công!")
         return True
     except Exception as e:
-        print(f"\n[LOI] Loi khi download: {e}")
+        print(f"\n[LỖI] Lỗi khi download: {e}")
         return False
 
 def decompress_bz2(source, destination):
     """Giải nén file .bz2"""
-    print(f"\nDang giai nen file...")
+    print(f"\nĐang giải nén file...")
     try:
         with bz2.BZ2File(source, 'rb') as src:
             with open(destination, 'wb') as dest:
                 shutil.copyfileobj(src, dest)
-        print("[OK] Giai nen thanh cong!")
-        
+        print("[OK] Giải nén thành công!")
+
         # Xóa file .bz2 sau khi giải nén
         os.remove(source)
-        print(f"Da xoa file nen: {source}")
+        print(f"Đã xóa file nén: {source}")
         return True
     except Exception as e:
-        print(f"[LOI] Loi khi giai nen: {e}")
+        print(f"[LỖI] Lỗi khi giải nén: {e}")
         return False
 
 def check_file_exists(filepath):
@@ -57,14 +57,14 @@ def get_file_size(filepath):
 def main():
     """Main function để download tất cả models cần thiết"""
     print("="*70)
-    print("   HỆ THỐNG GIÁM SÁT TẬP TRUNG HỦC SINH - MODEL DOWNLOADER")
+    print("   HỆ THỐNG GIÁM SÁT TẬP TRUNG HỌC SINH - MODEL DOWNLOADER")
     print("="*70)
-    
+
     # Tạo thư mục models nếu chưa có
     script_dir = Path(os.path.dirname(os.path.abspath(__file__)))
     models_dir = script_dir / "models"
     models_dir.mkdir(exist_ok=True)
-    
+
     # Model cần download
     models = [
         {
@@ -74,49 +74,58 @@ def main():
             "path": models_dir / "shape_predictor_68_face_landmarks.dat",
             "compressed": False,
             "required": True,
-            "used_in": "blinkDetect.py - Phát hiện nhấp nháy mắt"
-        }
+            "used_in": "blinkDetect.py, behavior_detector.py - Phát hiện khuôn mặt"
+        },
+        {
+            "name": "dlib_face_recognition_resnet_model_v1.dat",
+            "description": "Dlib Face Recognition Model (nhận diện cùng 1 người)",
+            "url": "https://github.com/ageitgey/face_recognition_models/raw/master/face_recognition_models/models/dlib_face_recognition_resnet_model_v1.dat",
+            "path": models_dir / "dlib_face_recognition_resnet_model_v1.dat",
+            "compressed": False,
+            "required": True,
+            "used_in": "behavior_detector.py - Nhận diện lại học sinh khi quay lại khung hình"
+        },
     ]
-    
-    print("\nKiem tra trang thai models...\n")
-    
+
+    print("\nKiểm tra trạng thái models...\n")
+
     models_to_download = []
-    
+
     for model in models:
-        status = "[OK] DA CO" if check_file_exists(model["path"]) else "[X] THIEU"
-        required_text = "[!] BAT BUOC" if model["required"] else "Tuy chon"
-        
+        status = "[OK] ĐÃ CÓ" if check_file_exists(model["path"]) else "[X] THIẾU"
+        required_text = "[!] BẮT BUỘC" if model["required"] else "Tùy chọn"
+
         print(f"{status} | {model['name']}")
         print(f"        {required_text} - {model['description']}")
         print(f"        Sử dụng trong: {model['used_in']}")
-        
+
         if check_file_exists(model["path"]):
             size = get_file_size(model["path"])
             print(f"        Kích thước: {size}")
         else:
             models_to_download.append(model)
         print()
-    
+
     if not models_to_download:
-        print("[OK] Tat ca models can thiet da co san!")
-        print("Ban co the chay ung dung ngay bay gio!")
+        print("[OK] Tất cả models cần thiết đã có sẵn!")
+        print("Bạn có thể chạy ứng dụng ngay bây giờ!")
         return
-    
-    print(f"\n[!] Can download {len(models_to_download)} model(s)\n")
-    
+
+    print(f"\n[!] Cần download {len(models_to_download)} model(s)\n")
+
     # Hỏi người dùng có muốn download không
     response = input("Bạn có muốn download các models này không? (y/n): ").lower().strip()
-    
+
     if response not in ['y', 'yes', 'có', 'c']:
-        print("\n[X] Da huy download.")
-        print("[!] Luu y: Ung dung se KHONG chay duoc neu thieu models bat buoc!")
+        print("\n[X] Đã hủy download.")
+        print("[!] Lưu ý: Ứng dụng sẽ KHÔNG chạy được nếu thiếu models bắt buộc!")
         return
-    
+
     # Download từng model
     success_count = 0
     for model in models_to_download:
         temp_path = str(model["path"]) + ".tmp"
-        
+
         if download_file(model["url"], temp_path, model["description"]):
             if model["compressed"]:
                 if decompress_bz2(temp_path, model["path"]):
@@ -124,26 +133,26 @@ def main():
             else:
                 shutil.move(temp_path, model["path"])
                 success_count += 1
-        
+
         if check_file_exists(model["path"]):
             size = get_file_size(model["path"])
-            print(f"[OK] File da san sang: {model['path']} ({size})")
-    
+            print(f"[OK] File đã sẵn sàng: {model['path']} ({size})")
+
     print("\n" + "="*70)
     if success_count == len(models_to_download):
-        print("DA DOWNLOAD THANH CONG TAT CA MODELS!")
-        print("[OK] Ban co the chay ung dung bang lenh: python main.py")
+        print("ĐÃ DOWNLOAD THÀNH CÔNG TẤT CẢ MODELS!")
+        print("[OK] Bạn có thể chạy ứng dụng bằng lệnh: python main.py")
     else:
-        print(f"[!] Da download thanh cong {success_count}/{len(models_to_download)} models")
-        print("[LOI] Mot so models download that bai. Vui long thu lai.")
+        print(f"[!] Đã download thành công {success_count}/{len(models_to_download)} models")
+        print("[LỖI] Một số models download thất bại. Vui lòng thử lại.")
     print("="*70)
 
 if __name__ == "__main__":
     try:
         main()
     except KeyboardInterrupt:
-        print("\n\n[!] Da huy download boi nguoi dung.")
+        print("\n\n[!] Đã hủy download bởi người dùng.")
     except Exception as e:
-        print(f"\n[LOI] Loi khong xac dinh: {e}")
+        print(f"\n[LỖI] Lỗi không xác định: {e}")
         import traceback
         traceback.print_exc()

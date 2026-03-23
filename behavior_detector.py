@@ -192,7 +192,10 @@ EMA_ALPHA_DISPLAY     = 0.3        # display: hiển thị mượt
 
 # --- Face tracking IOU threshold + grace period -------------------------
 FACE_TRACK_IOU_MIN    = 0.25
-FACE_TRACK_GRACE_FRAMES = 8        # giữ person state thêm 8 frame sau khi mất
+FACE_TRACK_GRACE_FRAMES = 8        # giữ person state thêm 8 frame sau khi mất (IoU matching)
+FACE_TRACK_REID_SECS  = 120.0      # giữ embedding 2 phút để re-identify khi quay lại
+FACE_TRACK_EMBED_THRESH = 0.45     # ngưỡng khoảng cách embedding (< 0.45 = cùng người)
+FACE_TRACK_REID_DIST  = 0.35       # fallback: ngưỡng khoảng cách center nếu không có embedding
 
 # --- CLAHE (image preprocessing) ---------------------------------------
 CLAHE_CLIP_LIMIT      = 2.5
@@ -294,7 +297,7 @@ class PersonState:
         self.mar_history: deque[float] = deque(maxlen=30)  # MAR ~1s gần nhất
         self.yawn_timestamps: deque[float] = deque()  # thời điểm mỗi lần ngáp
 
-        # --- Head pose ---------------------------------------------------
+        # --- Head pose (with calibration) ---------------------------------
         self.head_down_cnt   = 0
         self.head_turn_cnt   = 0
         self.pitch           = 0.0
@@ -302,6 +305,11 @@ class PersonState:
         self.roll            = 0.0
         self.smooth_pitch    = 0.0
         self.smooth_yaw      = 0.0
+        # Auto-calibration: vài giây đầu đo pitch/yaw baseline (góc cam)
+        self._pose_calibration_samples: list[tuple] = []  # (pitch, yaw)
+        self._pose_calibrated = False
+        self.pitch_baseline  = 0.0   # pitch "thẳng" (bù góc cam)
+        self.yaw_baseline    = 0.0   # yaw "thẳng"
 
         # --- Gaze detection ---------------------------------------------
         self.gaze_off_since: float | None = None      # timestamp nhìn lệch
@@ -336,6 +344,25 @@ class PersonState:
                 # Clamp để tránh giá trị vô lý
                 self.ear_threshold = max(0.15, min(0.30, self.ear_threshold))
             self._calibrated = True
+
+    def calibrate_pose(self, pitch: float, yaw: float):
+        """Thu thập pitch/yaw trong giai đoạn calibration để bù góc camera.
+        Gọi cùng lúc với calibrate_ear (dùng chung thời gian 4s đầu)."""
+        if self._pose_calibrated:
+            return
+        elapsed = time.time() - self._calibration_start
+        if elapsed <= EAR_CALIBRATION_SECS:
+            # Chỉ lấy khi pitch/yaw hợp lý (loại outlier lúc đang xoay đầu)
+            if abs(pitch) < 40 and abs(yaw) < 40:
+                self._pose_calibration_samples.append((pitch, yaw))
+        else:
+            if len(self._pose_calibration_samples) >= 10:
+                pitches = sorted([s[0] for s in self._pose_calibration_samples])
+                yaws    = sorted([s[1] for s in self._pose_calibration_samples])
+                n = len(pitches)
+                self.pitch_baseline = pitches[n // 2]  # median
+                self.yaw_baseline   = yaws[n // 2]
+            self._pose_calibrated = True
 
     def update_smooth(self, ear: float, mar: float, pitch: float, yaw: float):
         """Cập nhật EMA kép: detect (nhanh) + display (mượt)"""
@@ -825,38 +852,181 @@ class FacialAnalyzer:
 # FACE TRACKER  – matching faces giữa các frame bằng IOU
 # =============================================================================
 class FaceTracker:
-    """Gán person_id ổn định qua IOU matching bbox giữa frames.
-    v3: thêm grace period — giữ person state thêm N frame sau khi mất."""
+    """Gán person_id ổn định qua IOU matching + face embedding re-ID.
+    v5: dùng dlib face_recognition_resnet_model để tạo embedding 128D,
+    nhận diện lại cùng 1 học sinh khi rời rồi quay lại khung hình."""
+
+    _face_rec_model = None   # class-level: load 1 lần duy nhất
+    _face_rec_loaded = False
+
+    @classmethod
+    def _load_face_rec(cls):
+        """Load dlib face recognition model (1 lần)."""
+        if cls._face_rec_loaded:
+            return
+        cls._face_rec_loaded = True
+        if not DLIB_AVAILABLE:
+            return
+        rec_path = os.path.join(_BASE_DIR, "models", "dlib_face_recognition_resnet_model_v1.dat")
+        if os.path.exists(rec_path):
+            try:
+                cls._face_rec_model = dlib.face_recognition_model_v1(rec_path)
+                print("[FaceTracker] Face recognition model đã tải — hỗ trợ nhận diện lại học sinh")
+            except Exception as e:
+                print(f"[FaceTracker] Không tải được face recognition model: {e}")
+        else:
+            print(f"[FaceTracker] Không tìm thấy {rec_path}")
+            print("              Chạy: python download_models.py để tải")
+            print("              Hệ thống vẫn hoạt động nhưng dùng vị trí để re-ID (kém chính xác hơn)")
 
     def __init__(self):
+        self._load_face_rec()
         self._next_id = 0
-        self._prev_faces: dict[int, tuple] = {}   # pid -> bbox
+        # Active: đang thấy hoặc mới mất vài frame (IoU matching)
+        self._prev_faces: dict[int, tuple] = {}    # pid -> bbox
         self._grace_counter: dict[int, int] = {}   # pid -> frames since last seen
+        # Embeddings cho mỗi person (cập nhật liên tục bằng EMA)
+        self._embeddings: dict[int, np.ndarray] = {}  # pid -> 128D embedding
+        # Pool re-ID: đã mất lâu hơn grace frames, giữ lại để re-identify
+        self._reid_pool: dict[int, dict] = {}      # pid -> {bbox, embedding, last_seen}
 
-    def update(self, face_bboxes: list[tuple]) -> list[int]:
-        """Nhận list bbox, trả về list person_id tương ứng."""
+    def _compute_embedding(self, frame: np.ndarray, bbox: tuple) -> np.ndarray | None:
+        """Tính 128D face embedding từ frame + bbox. Trả None nếu không có model."""
+        if self._face_rec_model is None or not DLIB_AVAILABLE:
+            return None
+        try:
+            x1, y1, x2, y2 = [int(v) for v in bbox]
+            h, w = frame.shape[:2]
+            x1, y1 = max(0, x1), max(0, y1)
+            x2, y2 = min(w, x2), min(h, y2)
+            rect = dlib.rectangle(x1, y1, x2, y2)
+
+            # Cần shape predictor để align face
+            sp_path = os.path.join(_BASE_DIR, "models", "shape_predictor_68_face_landmarks.dat")
+            if not hasattr(self, '_sp') or self._sp is None:
+                if os.path.exists(sp_path):
+                    self._sp = dlib.shape_predictor(sp_path)
+                else:
+                    return None
+
+            shape = self._sp(frame, rect)
+            embedding = np.array(self._face_rec_model.compute_face_descriptor(frame, shape))
+            return embedding
+        except Exception:
+            return None
+
+    @staticmethod
+    def _embedding_dist(e1: np.ndarray, e2: np.ndarray) -> float:
+        """Khoảng cách Euclidean giữa 2 embedding."""
+        return float(np.linalg.norm(e1 - e2))
+
+    def _try_reid(self, bbox, frame_w, embedding=None) -> int | None:
+        """Thử match face mới với pool re-ID bằng embedding (ưu tiên) hoặc vị trí."""
+        now = time.time()
+
+        # Dọn hết hạn
+        expired = [p for p, v in self._reid_pool.items()
+                   if now - v['last_seen'] > FACE_TRACK_REID_SECS]
+        for pid in expired:
+            self._reid_pool.pop(pid, None)
+
+        if not self._reid_pool:
+            return None
+
+        # --- Ưu tiên 1: So sánh embedding (chính xác nhất) ---
+        if embedding is not None:
+            best_pid = None
+            best_dist = float('inf')
+            for pid, info in self._reid_pool.items():
+                pool_emb = info.get('embedding')
+                if pool_emb is not None:
+                    d = self._embedding_dist(embedding, pool_emb)
+                    if d < best_dist:
+                        best_dist = d
+                        best_pid = pid
+            if best_pid is not None and best_dist < FACE_TRACK_EMBED_THRESH:
+                self._reid_pool.pop(best_pid, None)
+                return best_pid
+
+        # --- Fallback: Nếu chỉ có 1 person trong pool → gán luôn ---
+        remaining = {p: v for p, v in self._reid_pool.items()
+                     if now - v['last_seen'] <= FACE_TRACK_REID_SECS}
+        if len(remaining) == 1:
+            pid = next(iter(remaining))
+            self._reid_pool.pop(pid, None)
+            return pid
+
+        # --- Fallback: So sánh vị trí center ---
+        best_pid = None
+        best_dist = float('inf')
+        cx1 = (bbox[0] + bbox[2]) / 2.0
+        cy1 = (bbox[1] + bbox[3]) / 2.0
+        for pid, info in self._reid_pool.items():
+            bb2 = info['bbox']
+            cx2 = (bb2[0] + bb2[2]) / 2.0
+            cy2 = (bb2[1] + bb2[3]) / 2.0
+            d = math.sqrt((cx1 - cx2)**2 + (cy1 - cy2)**2) / max(frame_w, 1)
+            if d < best_dist:
+                best_dist = d
+                best_pid = pid
+        if best_pid is not None and best_dist < FACE_TRACK_REID_DIST:
+            self._reid_pool.pop(best_pid, None)
+            return best_pid
+
+        return None
+
+    def update(self, face_bboxes: list[tuple], frame_w: int = 640,
+               frame: np.ndarray = None) -> list[int]:
+        """Nhận list bbox + frame, trả về list person_id tương ứng.
+        frame dùng để tính embedding (optional, nếu có face_rec model)."""
+        now = time.time()
+
         if not face_bboxes:
-            # Tăng grace counter cho tất cả, xóa nếu hết grace
+            # Tăng grace counter, chuyển vào reid_pool nếu hết grace
             expired = []
-            for pid in self._grace_counter:
+            for pid in list(self._grace_counter.keys()):
                 self._grace_counter[pid] += 1
                 if self._grace_counter[pid] > FACE_TRACK_GRACE_FRAMES:
                     expired.append(pid)
             for pid in expired:
-                self._prev_faces.pop(pid, None)
+                bbox = self._prev_faces.pop(pid, None)
                 self._grace_counter.pop(pid, None)
+                if bbox is not None:
+                    self._reid_pool[pid] = {
+                        'bbox': bbox,
+                        'embedding': self._embeddings.get(pid),
+                        'last_seen': now,
+                    }
+            # Dọn reid_pool hết hạn
+            for pid in [p for p, v in self._reid_pool.items()
+                        if now - v['last_seen'] > FACE_TRACK_REID_SECS]:
+                self._reid_pool.pop(pid, None)
             return []
 
         n = len(face_bboxes)
 
+        # Tính embedding cho mỗi face (nếu có model + frame)
+        cur_embeddings = [None] * n
+        if frame is not None and self._face_rec_model is not None:
+            for i, bbox in enumerate(face_bboxes):
+                cur_embeddings[i] = self._compute_embedding(frame, bbox)
+
         if not self._prev_faces:
+            # Không có active → thử re-ID từ pool
             ids = []
             new_prev = {}
-            for bbox in face_bboxes:
-                pid = self._next_id
-                self._next_id += 1
+            for i, bbox in enumerate(face_bboxes):
+                reid_pid = self._try_reid(bbox, frame_w, cur_embeddings[i])
+                if reid_pid is not None:
+                    pid = reid_pid
+                else:
+                    pid = self._next_id
+                    self._next_id += 1
                 ids.append(pid)
                 new_prev[pid] = bbox
+                # Lưu / cập nhật embedding
+                if cur_embeddings[i] is not None:
+                    self._embeddings[pid] = cur_embeddings[i]
             self._prev_faces = new_prev
             self._grace_counter = {pid: 0 for pid in new_prev}
             return ids
@@ -894,27 +1064,47 @@ class FaceTracker:
             used_cur.add(best_i)
             used_prev.add(best_j)
 
+        # Chưa match → thử re-ID bằng embedding trước khi tạo ID mới
         for i in range(n):
             if assigned[i] is None:
-                assigned[i] = self._next_id
-                self._next_id += 1
+                reid_pid = self._try_reid(face_bboxes[i], frame_w, cur_embeddings[i])
+                if reid_pid is not None:
+                    assigned[i] = reid_pid
+                else:
+                    assigned[i] = self._next_id
+                    self._next_id += 1
 
-        # Cập nhật prev_faces: matched + grace period cho unmatched
+        # Cập nhật embeddings (EMA cho smooth)
+        for i, pid in enumerate(assigned):
+            if cur_embeddings[i] is not None:
+                old = self._embeddings.get(pid)
+                if old is not None:
+                    # EMA: 80% cũ + 20% mới → ổn định
+                    self._embeddings[pid] = 0.8 * old + 0.2 * cur_embeddings[i]
+                else:
+                    self._embeddings[pid] = cur_embeddings[i]
+
+        # Cập nhật prev_faces + grace period
         new_prev = {}
         new_grace = {}
         matched_pids = set(assigned)
 
         for i, pid in enumerate(assigned):
             new_prev[pid] = face_bboxes[i]
-            new_grace[pid] = 0  # vừa thấy → reset grace
+            new_grace[pid] = 0
 
-        # Giữ lại unmatched prev faces trong grace period
         for pid in prev_ids:
             if pid not in matched_pids:
                 grace = self._grace_counter.get(pid, 0) + 1
                 if grace <= FACE_TRACK_GRACE_FRAMES:
-                    new_prev[pid] = self._prev_faces[pid]  # giữ bbox cũ
+                    new_prev[pid] = self._prev_faces[pid]
                     new_grace[pid] = grace
+                else:
+                    self._reid_pool[pid] = {
+                        'bbox': self._prev_faces[pid],
+                        'embedding': self._embeddings.get(pid),
+                        'last_seen': now,
+                    }
 
         self._prev_faces = new_prev
         self._grace_counter = new_grace
@@ -952,8 +1142,9 @@ class BehaviorAnalyzer:
         gaze  = face_data.get('gaze_ratio', 0.0)
         bbox  = face_data.get('bbox')
 
-        # Adaptive EAR calibration (4s đầu tiên)
+        # Adaptive calibration (4s đầu tiên): EAR + Head Pose
         st.calibrate_ear(ear)
+        st.calibrate_pose(pitch, yaw)
 
         st.update_smooth(ear, mar, pitch, yaw)
         if bbox:
@@ -962,8 +1153,9 @@ class BehaviorAnalyzer:
         # Dùng detect EMA (phản hồi nhanh) cho logic cảnh báo
         d_ear   = st.detect_ear
         d_mar   = st.detect_mar
-        s_pitch = st.smooth_pitch  # head pose dùng display EMA (ổn định hơn)
-        s_yaw   = st.smooth_yaw
+        # Head pose: trừ baseline để bù góc camera
+        s_pitch = st.smooth_pitch - st.pitch_baseline
+        s_yaw   = st.smooth_yaw  - st.yaw_baseline
 
         # ── 1. EAR: Blink / Drowsy / Microsleep (TIME-BASED) ────────────
         ear_thresh = st.ear_threshold  # adaptive per person
@@ -1411,7 +1603,7 @@ class BehaviorDetector:
 
         # 3. Face tracking
         face_bboxes = [fd.get('bbox', (0, 0, 1, 1)) for fd in faces]
-        person_ids = self.tracker.update(face_bboxes)
+        person_ids = self.tracker.update(face_bboxes, frame_w=frame.shape[1], frame=frame)
 
         # 4. Phone → person assignment
         # Dùng overlap_ratio (face nằm trong person) thay vì IoU vì face << person
