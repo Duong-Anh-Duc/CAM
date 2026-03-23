@@ -87,7 +87,7 @@ def put_vn_text(frame, text, pos, font_size=18, color=(255, 255, 255),
 # ── Kiểm tra thư viện ─────────────────────────────────────────────
 def _check_deps():
     missing = []
-    for lib in ("torch", "torchvision", "dlib"):
+    for lib in ("torch", "torchvision", "mediapipe"):
         try:
             __import__(lib)
         except ImportError:
@@ -112,24 +112,22 @@ import torch
 import torch.nn as nn
 import torchvision.transforms as T
 from torchvision.models import resnet50, ResNet50_Weights
-import dlib
+import mediapipe as mp
 
 # ── Đường dẫn ─────────────────────────────────────────────────────
 _DIR           = os.path.dirname(os.path.abspath(__file__))
 MODEL_PATH     = os.path.join(_DIR, "models", "resnet_drowsiness.pth")
-DLIB_PATH      = os.path.join(_DIR, "models", "shape_predictor_68_face_landmarks.dat")
 ALARM_PATH     = os.path.join(_DIR, "alarm.wav")
+
+# MediaPipe eye indices
+LEFT_EYE_MP  = [33, 160, 158, 133, 153, 144]
+RIGHT_EYE_MP = [362, 385, 387, 263, 373, 380]
 
 # ── Hằng số phát hiện ─────────────────────────────────────────────
 DROWSY_SECS     = 0.8   # Giây nhắm mắt → cảnh báo DROWSY
 MICROSLEEP_SECS = 1.8   # Giây nhắm mắt → MICROSLEEP
 IMG_SIZE        = 224
 EYE_PADDING     = 15    # Pixel padding xung quanh vùng mắt
-RESIZE_HEIGHT   = 460   # Chiều cao resize frame (giống blinkDetect.py)
-
-# Chỉ số landmark mắt (dlib 68 points)
-LEFT_EYE_IDX  = list(range(36, 42))
-RIGHT_EYE_IDX = list(range(42, 48))
 
 
 # ── Âm thanh ──────────────────────────────────────────────────────
@@ -256,16 +254,21 @@ def predict_eye(model, device, eye_bgr, closed_idx: int):
     return score > 0.5, score
 
 
-def get_eye_roi(frame, landmarks, eye_indices, padding: int = EYE_PADDING):
-    """Cắt vùng mắt từ frame theo landmarks dlib."""
-    pts = np.array([(landmarks.part(i).x, landmarks.part(i).y) for i in eye_indices])
-    x, y, w, h = cv2.boundingRect(pts)
-    x1 = max(0, x - padding)
-    y1 = max(0, y - padding)
-    x2 = min(frame.shape[1], x + w + padding)
-    y2 = min(frame.shape[0], y + h + padding)
+def get_eye_roi_mp(frame, lms, eye_indices, w, h, padding: int = EYE_PADDING):
+    """Cắt vùng mắt từ frame theo MediaPipe landmarks."""
+    pts = np.array([(int(lms[i].x * w), int(lms[i].y * h)) for i in eye_indices])
+    bx, by, bw, bh = cv2.boundingRect(pts)
+    x1 = max(0, bx - padding)
+    y1 = max(0, by - padding)
+    x2 = min(w, bx + bw + padding)
+    y2 = min(h, by + bh + padding)
     roi = frame[y1:y2, x1:x2]
     return roi, (x1, y1, x2 - x1, y2 - y1)
+
+
+def get_eye_pts_mp(lms, indices, w, h):
+    """Lấy tọa độ pixel của eye landmarks từ MediaPipe."""
+    return [(int(lms[i].x * w), int(lms[i].y * h)) for i in indices]
 
 
 # ── Overlay helpers ───────────────────────────────────────────────
@@ -302,17 +305,10 @@ def main():
         cv2.waitKey(0)
         sys.exit(1)
 
-    # Load dlib
-    if not os.path.exists(DLIB_PATH):
-        blank = np.zeros((200, 700, 3), dtype=np.uint8)
-        put_vn_text(blank, f"Không tìm thấy: {DLIB_PATH}", (20, 40), font_size=18, color=(100, 100, 255))
-        put_vn_text(blank, "Hãy chạy: python download_models.py", (20, 90), font_size=18, color=(255, 200, 0))
-        cv2.imshow("ResNet Detector - Lỗi", blank)
-        cv2.waitKey(0)
-        sys.exit(1)
-
-    detector  = dlib.get_frontal_face_detector()
-    predictor = dlib.shape_predictor(DLIB_PATH)
+    # MediaPipe FaceMesh
+    face_mesh = mp.solutions.face_mesh.FaceMesh(
+        max_num_faces=1, refine_landmarks=True,
+        min_detection_confidence=0.5, min_tracking_confidence=0.5)
 
     audio = AudioManager(ALARM_PATH)
 
@@ -321,12 +317,19 @@ def main():
         print("[LỖI] Không mở được camera!")
         sys.exit(1)
 
-    # State
-    eyes_closed_since = None   # float | None
+    eyes_closed_since = None
     alarm_on          = False
-    left_prob_ema     = 0.0    # EMA để hiển thị mượt
+    left_prob_ema     = 0.0
     right_prob_ema    = 0.0
     EMA_ALPHA         = 0.4
+
+    from scipy.spatial import distance as dist
+
+    def _ear(pts):
+        A = dist.euclidean(pts[1], pts[5])
+        B = dist.euclidean(pts[2], pts[4])
+        C = dist.euclidean(pts[0], pts[3])
+        return (A + B) / (2.0 * max(C, 1e-6))
 
     print("[INFO] Bắt đầu phát hiện... (q/ESC=thoát, r=reset)")
 
@@ -335,73 +338,62 @@ def main():
         if not ret:
             break
 
-        # Resize
         h, w = frame.shape[:2]
-        scale  = RESIZE_HEIGHT / h
-        frame  = cv2.resize(frame, (int(w * scale), RESIZE_HEIGHT))
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = face_mesh.process(rgb)
 
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        faces = detector(gray, 0)
-
-        # ── Mặc định nếu không có mặt ──────────────────────────────
         status_text  = "Không phát hiện khuôn mặt"
         status_color = (0, 165, 255)
         both_closed  = False
+        has_face     = False
 
-        for face in faces:
-            landmarks = predictor(gray, face)
+        if result.multi_face_landmarks:
+            lms = result.multi_face_landmarks[0].landmark
+            has_face = True
 
-            # Khung mặt
-            x1, y1 = face.left(), face.top()
-            x2, y2 = face.right(), face.bottom()
+            # Bbox từ landmarks
+            xs = [int(lms[i].x * w) for i in range(468)]
+            ys = [int(lms[i].y * h) for i in range(468)]
+            x1, y1, x2, y2 = min(xs) - 10, min(ys) - 10, max(xs) + 10, max(ys) + 10
             cv2.rectangle(frame, (x1, y1), (x2, y2), (100, 255, 100), 2)
 
-            # Tính EAR (Eye Aspect Ratio) — phản hồi nhắm mắt tức thì
-            from scipy.spatial import distance as dist
-            left_pts = [(landmarks.part(i).x, landmarks.part(i).y) for i in LEFT_EYE_IDX]
-            right_pts = [(landmarks.part(i).x, landmarks.part(i).y) for i in RIGHT_EYE_IDX]
-            def _ear(pts):
-                A = dist.euclidean(pts[1], pts[5])
-                B = dist.euclidean(pts[2], pts[4])
-                C = dist.euclidean(pts[0], pts[3])
-                return (A + B) / (2.0 * max(C, 1e-6))
+            # EAR
+            left_pts = get_eye_pts_mp(lms, LEFT_EYE_MP, w, h)
+            right_pts = get_eye_pts_mp(lms, RIGHT_EYE_MP, w, h)
             ear = (_ear(left_pts) + _ear(right_pts)) / 2.0
             ear_closed = ear < 0.22
 
-            # Tách vùng mắt + ResNet predict
-            left_roi,  left_rect  = get_eye_roi(frame, landmarks, LEFT_EYE_IDX)
-            right_roi, right_rect = get_eye_roi(frame, landmarks, RIGHT_EYE_IDX)
+            # Eye ROI + ResNet
+            left_roi, left_rect = get_eye_roi_mp(frame, lms, LEFT_EYE_MP, w, h)
+            right_roi, right_rect = get_eye_roi_mp(frame, lms, RIGHT_EYE_MP, w, h)
 
-            l_closed, l_prob = predict_eye(model, device, left_roi,  closed_idx)
+            l_closed, l_prob = predict_eye(model, device, left_roi, closed_idx)
             r_closed, r_prob = predict_eye(model, device, right_roi, closed_idx)
 
-            # Kết hợp: EAR (nhanh) + ResNet (AI) → score cuối
-            # Nếu EAR phát hiện nhắm mắt → boost score lên
+            # Kết hợp EAR + ResNet
             if ear_closed:
-                l_prob = max(l_prob, 0.7)  # EAR nhắm → ít nhất 70%
+                l_prob = max(l_prob, 0.7)
                 r_prob = max(r_prob, 0.7)
                 l_closed = True
                 r_closed = True
 
-            # EMA
             left_prob_ema  = EMA_ALPHA * l_prob + (1 - EMA_ALPHA) * left_prob_ema
             right_prob_ema = EMA_ALPHA * r_prob + (1 - EMA_ALPHA) * right_prob_ema
 
             # Vẽ khung mắt
             lx, ly, lw, lh = left_rect
             rx, ry, rw, rh = right_rect
-            l_col = (0, 0, 255) if l_closed else (0, 220, 0)
-            r_col = (0, 0, 255) if r_closed else (0, 220, 0)
-            cv2.rectangle(frame, (lx, ly), (lx + lw, ly + lh), l_col, 1)
-            cv2.rectangle(frame, (rx, ry), (rx + rw, ry + rh), r_col, 1)
+            cv2.rectangle(frame, (lx, ly), (lx + lw, ly + lh),
+                          (0, 0, 255) if l_closed else (0, 220, 0), 1)
+            cv2.rectangle(frame, (rx, ry), (rx + rw, ry + rh),
+                          (0, 0, 255) if r_closed else (0, 220, 0), 1)
 
-            # Hiện EAR trên frame
             put_vn_text(frame, f"EAR: {ear:.2f}", (x1, y2 + 5),
                         font_size=14, color=(255, 255, 0))
 
             both_closed = l_closed and r_closed
 
-        # ── State machine thời gian thực ───────────────────────────
+        # State machine
         now = time.time()
         if both_closed:
             if eyes_closed_since is None:
@@ -423,7 +415,7 @@ def main():
                 alarm_on = True
         else:
             eyes_closed_since = None
-            if len(faces) > 0:
+            if has_face:
                 avg_prob = (left_prob_ema + right_prob_ema) / 2
                 status_text  = f"Tỉnh táo  |  Prob nhắm: {avg_prob*100:.1f}%"
                 status_color = (0, 200, 0)

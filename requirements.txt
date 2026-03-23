@@ -1,44 +1,44 @@
 # ====================================================================
 # STUDENT FOCUS MONITORING SYSTEM - REQUIREMENTS
-# Python 3.9+ | macOS / Windows / Linux
+# Python 3.10 - 3.12 | macOS / Windows / Linux
 # ====================================================================
 # Cài đặt:
 #   pip install -r requirements.txt
 #
-# Nếu dlib lỗi:
-#   pip install cmake && pip install dlib
+# Windows cài PyTorch riêng trước:
+#   pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 # ====================================================================
 
 # --- Computer Vision ---
 opencv-python>=4.8.0
 
-# --- Facial Landmark Detection ---
-dlib>=19.22.0
+# --- Face Analysis (thay thế Dlib, dễ cài trên mọi OS) ---
+mediapipe>=0.10.0
+
+# --- Face Recognition (re-ID học sinh, dùng PyTorch) ---
+facenet-pytorch>=2.5.0
 
 # --- Numerical ---
 numpy>=1.24.0
 scipy>=1.10.0
 
-# --- Image Processing (GUI + PIL overlay) ---
+# --- Image Processing ---
 Pillow>=9.0.0
 
-# --- Audio (cài cả hai, code tự chọn cái nào khả dụng) ---
+# --- Audio ---
 pygame>=2.1.0
-playsound>=1.2.2
 
 # --- Object Detection (YOLOv8) ---
 ultralytics>=8.0.0
-# lapx là bản thay thế lap tương thích tốt hơn với Python 3.11+:
 lapx>=0.5.2
-
-# --- MediaPipe (fallback khi không có Dlib) ---
-mediapipe>=0.10.0
 
 # --- Visualization ---
 matplotlib>=3.7.0
 
-# --- ResNet50 AI Model (train_resnet.py + resnet_detector.py) ---
-# Cài PyTorch: https://pytorch.org/get-started/locally/
+# --- ResNet50 AI Model ---
 torch>=2.0.0
 torchvision>=0.15.0
 kagglehub>=0.2.0
+
+# --- Optional: Dlib (cài thêm nếu muốn, không bắt buộc) ---
+# pip install cmake && pip install dlib

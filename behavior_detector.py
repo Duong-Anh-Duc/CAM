@@ -879,72 +879,68 @@ class FacialAnalyzer:
 # =============================================================================
 class FaceTracker:
     """Gán person_id ổn định qua IOU matching + face embedding re-ID.
-    v5: dùng dlib face_recognition_resnet_model để tạo embedding 128D,
-    nhận diện lại cùng 1 học sinh khi rời rồi quay lại khung hình."""
+    v6: dùng facenet-pytorch (InceptionResnetV1) cho face embedding 512D,
+    không cần dlib — dễ cài trên Windows."""
 
     _face_rec_model = None   # class-level: load 1 lần duy nhất
     _face_rec_loaded = False
+    _face_rec_device = None
 
     @classmethod
     def _load_face_rec(cls):
-        """Load dlib face recognition model (1 lần)."""
+        """Load facenet-pytorch model (1 lần)."""
         if cls._face_rec_loaded:
             return
         cls._face_rec_loaded = True
-        if not DLIB_AVAILABLE:
-            return
-        rec_path = os.path.join(_BASE_DIR, "models", "dlib_face_recognition_resnet_model_v1.dat")
-        if os.path.exists(rec_path):
-            try:
-                cls._face_rec_model = dlib.face_recognition_model_v1(rec_path)
-                print("[FaceTracker] Face recognition model đã tải — hỗ trợ nhận diện lại học sinh")
-            except Exception as e:
-                print(f"[FaceTracker] Không tải được face recognition model: {e}")
-        else:
-            print(f"[FaceTracker] Không tìm thấy {rec_path}")
-            print("              Chạy: python download_models.py để tải")
-            print("              Hệ thống vẫn hoạt động nhưng dùng vị trí để re-ID (kém chính xác hơn)")
+        try:
+            from facenet_pytorch import InceptionResnetV1
+            import torch
+            device = torch.device('cuda' if torch.cuda.is_available()
+                                  else 'mps' if hasattr(torch.backends, 'mps') and torch.backends.mps.is_available()
+                                  else 'cpu')
+            cls._face_rec_model = InceptionResnetV1(pretrained='vggface2').eval().to(device)
+            cls._face_rec_device = device
+            print(f"[FaceTracker] FaceNet model đã tải ({device}) — hỗ trợ nhận diện lại học sinh")
+        except Exception as e:
+            print(f"[FaceTracker] Không tải được FaceNet: {e}")
+            print("              pip install facenet-pytorch")
+            print("              Hệ thống vẫn hoạt động nhưng dùng vị trí để re-ID")
 
     def __init__(self):
         self._load_face_rec()
         self._next_id = 0
-        # Active: đang thấy hoặc mới mất vài frame (IoU matching)
-        self._prev_faces: dict[int, tuple] = {}    # pid -> bbox
-        self._grace_counter: dict[int, int] = {}   # pid -> frames since last seen
-        # Embeddings cho mỗi person (cập nhật liên tục bằng EMA)
-        self._embeddings: dict[int, np.ndarray] = {}  # pid -> 128D embedding
-        # Pool re-ID: đã mất lâu hơn grace frames, giữ lại để re-identify
-        self._reid_pool: dict[int, dict] = {}      # pid -> {bbox, embedding, last_seen}
+        self._prev_faces: dict[int, tuple] = {}
+        self._grace_counter: dict[int, int] = {}
+        self._embeddings: dict[int, np.ndarray] = {}  # pid -> 512D embedding
+        self._reid_pool: dict[int, dict] = {}
 
     def _compute_embedding(self, frame: np.ndarray, bbox: tuple) -> np.ndarray | None:
-        """Tính 128D face embedding từ frame + bbox. Trả None nếu không có model."""
-        if self._face_rec_model is None or not DLIB_AVAILABLE:
+        """Tính 512D face embedding từ frame + bbox bằng FaceNet."""
+        if self._face_rec_model is None:
             return None
         try:
+            import torch
+            from torchvision import transforms
+
             x1, y1, x2, y2 = [int(v) for v in bbox]
             h, w = frame.shape[:2]
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)
             if x2 - x1 < 20 or y2 - y1 < 20:
                 return None
-            rect = dlib.rectangle(x1, y1, x2, y2)
 
-            # Cần shape predictor để align face
-            if not hasattr(self, '_sp') or self._sp is None:
-                sp_path = os.path.join(_BASE_DIR, "models", "shape_predictor_68_face_landmarks.dat")
-                if os.path.exists(sp_path):
-                    self._sp = dlib.shape_predictor(sp_path)
-                else:
-                    return None
+            # Crop face + resize cho FaceNet (160x160 RGB)
+            face_bgr = frame[y1:y2, x1:x2]
+            face_rgb = cv2.cvtColor(face_bgr, cv2.COLOR_BGR2RGB)
+            face_resized = cv2.resize(face_rgb, (160, 160))
 
-            # dlib cần RGB frame cho face_recognition
-            if len(frame.shape) == 3 and frame.shape[2] == 3:
-                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            else:
-                rgb = frame
+            # Normalize [-1, 1] như FaceNet yêu cầu
+            tensor = torch.FloatTensor(face_resized).permute(2, 0, 1).unsqueeze(0)
+            tensor = (tensor - 127.5) / 128.0
+            tensor = tensor.to(self._face_rec_device)
 
-            shape = self._sp(rgb, rect)
-            embedding = np.array(self._face_rec_model.compute_face_descriptor(rgb, shape))
+            with torch.no_grad():
+                embedding = self._face_rec_model(tensor)[0].cpu().numpy()
             return embedding
         except Exception:
             return None

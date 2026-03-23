@@ -1,12 +1,10 @@
 # -*- coding: utf-8 -*-
 """
-Created on Tue Oct 29 19:51:37 2019
-
-@author: Lenovo
+Phát hiện ngủ gật đơn giản bằng EAR (Eye Aspect Ratio).
+Dùng MediaPipe FaceMesh — không cần dlib, dễ cài trên Windows.
 """
 
 import os
-import dlib
 import sys
 import cv2
 import time
@@ -14,410 +12,181 @@ import numpy as np
 from scipy.spatial import distance as dist
 from threading import Thread
 import queue
-from datetime import datetime
-
-# Audio library imports - try playsound first (Windows), then pygame (macOS/Linux)
-try:
-    import playsound
-    AUDIO_LIB = 'playsound'
-except ImportError:
-    try:
-        import pygame
-        pygame.mixer.init()
-        AUDIO_LIB = 'pygame'
-    except ImportError:
-        AUDIO_LIB = None
-        print("Warning: No audio library available. Sound alerts will be disabled.")
-
-
-FACE_DOWNSAMPLE_RATIO = 1.5
-RESIZE_HEIGHT = 460
-
-thresh = 0.27
 
 _BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-
-# IMPORTANT: You must download the shape_predictor_68_face_landmarks.dat file from
-# https://dlib.net/files/shape_predictor_68_face_landmarks.dat.bz2
-# and place it in the 'models' folder
-modelPath = os.path.join(_BASE_DIR, "models", "shape_predictor_68_face_landmarks.dat")
 sound_path = os.path.join(_BASE_DIR, "alarm.wav")
 
-detector = dlib.get_frontal_face_detector()
-predictor = dlib.shape_predictor(modelPath)
+# Audio
+try:
+    import pygame
+    pygame.mixer.init()
+    AUDIO_LIB = 'pygame'
+except ImportError:
+    try:
+        from playsound import playsound as _playsound_func
+        AUDIO_LIB = 'playsound'
+    except ImportError:
+        AUDIO_LIB = None
 
-leftEyeIndex = [36, 37, 38, 39, 40, 41]
-rightEyeIndex = [42, 43, 44, 45, 46, 47]
+# MediaPipe
+import mediapipe as mp
+mp_face_mesh = mp.solutions.face_mesh
 
-blinkCount = 0
-drowsy = 0
-state = 0
-blinkTime = 0.15 #150ms
-drowsyTime = 1.5  #1200ms
+# MediaPipe eye landmark indices (tương đương dlib 36-47)
+LEFT_EYE  = [33, 160, 158, 133, 153, 144]
+RIGHT_EYE = [362, 385, 387, 263, 373, 380]
+
+EAR_THRESH = 0.22
+DROWSY_SECS = 1.5
 ALARM_ON = False
-GAMMA = 1.5
 threadStatusQ = queue.Queue()
 
-# Phase 2: Session tracking variables (temporary until SessionManager is ready)
-current_ear = 0.0
-session_ear_values = []
-session_alerts = 0
-session_start_time = None
-session_active = False
 
-# Temporary Session Tracker - will be replaced by real SessionManager
-class TempSessionTracker:
-    def __init__(self):
-        global session_start_time, session_active
-        session_start_time = datetime.now()
-        session_active = True
-        print(f"Session started at: {session_start_time}")
-    
-    def add_ear_value(self, ear_value):
-        global session_ear_values, current_ear
-        current_ear = ear_value
-        timestamp = datetime.now()
-        session_ear_values.append({
-            "value": round(ear_value, 4),
-            "timestamp": timestamp.isoformat()
-        })
-    
-    def add_alert(self):
-        global session_alerts
-        session_alerts += 1
-        timestamp = datetime.now()
-        print(f"Alert #{session_alerts} triggered at: {timestamp}")
-    
-    def end_session(self):
-        global session_start_time, session_active
-        if session_active:
-            end_time = datetime.now()
-            duration = (end_time - session_start_time).total_seconds() / 60
-            avg_ear = sum(item["value"] for item in session_ear_values) / len(session_ear_values) if session_ear_values else 0
-            
-            print(f"\n=== Session Summary ===")
-            print(f"Duration: {duration:.2f} minutes")
-            print(f"Total EAR readings: {len(session_ear_values)}")
-            print(f"Average EAR: {avg_ear:.4f}")
-            print(f"Alerts triggered: {session_alerts}")
-            print(f"Total blinks: {blinkCount}")
-            
-            session_active = False
+def eye_aspect_ratio(pts):
+    A = dist.euclidean(pts[1], pts[5])
+    B = dist.euclidean(pts[2], pts[4])
+    C = dist.euclidean(pts[0], pts[3])
+    return (A + B) / (2.0 * max(C, 1e-6))
 
-# Initialize session tracker
-session_tracker = None
 
-invGamma = 1.0/GAMMA
-table = np.array([((i / 255.0) ** invGamma) * 255 for i in range(0, 256)]).astype("uint8")
+def get_eye_pts(landmarks, indices, w, h):
+    return [(int(landmarks[i].x * w), int(landmarks[i].y * h)) for i in indices]
 
-def gamma_correction(image):
-    return cv2.LUT(image, table)
 
-def histogram_equalization(image):
-    gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
-    return cv2.equalizeHist(gray) 
-
-def soundAlert(path, threadStatusQ):
-    import traceback
-    if AUDIO_LIB is None:
-        return
-
+def soundAlert(path, statusQ):
     if AUDIO_LIB == 'pygame':
         try:
             sound = pygame.mixer.Sound(path)
             while True:
-                if not threadStatusQ.empty():
-                    FINISHED = threadStatusQ.get()
-                    if FINISHED:
+                if not statusQ.empty():
+                    if statusQ.get():
                         pygame.mixer.stop()
                         return
                 sound.play()
-                # Check dừng mỗi 50ms — dừng NGAY khi nhận signal
                 while pygame.mixer.get_busy():
-                    if not threadStatusQ.empty():
-                        FINISHED = threadStatusQ.get()
-                        if FINISHED:
+                    if not statusQ.empty():
+                        if statusQ.get():
                             pygame.mixer.stop()
                             return
                     pygame.time.wait(50)
-        except Exception as e:
-            print(f"Error playing sound: {e}")
-    else:  # playsound
+        except Exception:
+            pass
+    elif AUDIO_LIB == 'playsound':
         while True:
-            if not threadStatusQ.empty():
-                FINISHED = threadStatusQ.get()
-                if FINISHED:
-                    break
+            if not statusQ.empty():
+                if statusQ.get():
+                    return
             try:
-                playsound.playsound(path)
-            except Exception as e:
-                print(f"Error playing sound: {e}")
+                _playsound_func(path)
+            except Exception:
                 break
 
-def eye_aspect_ratio(eye):
-    A = dist.euclidean(eye[1], eye[5])
-    B = dist.euclidean(eye[2], eye[4])
-    C = dist.euclidean(eye[0], eye[3])
-    ear = (A + B) / (2.0 * C)
 
-    return ear
+def main():
+    global ALARM_ON
 
+    face_mesh = mp_face_mesh.FaceMesh(
+        max_num_faces=1,
+        refine_landmarks=True,
+        min_detection_confidence=0.5,
+        min_tracking_confidence=0.5,
+    )
 
-def checkEyeStatus(landmarks):
-    global session_tracker, current_ear
-    mask = np.zeros(frame.shape[:2], dtype = np.float32)
-    
-    hullLeftEye = []
-    for i in range(0, len(leftEyeIndex)):
-        hullLeftEye.append((landmarks[leftEyeIndex[i]][0], landmarks[leftEyeIndex[i]][1]))
+    cap = cv2.VideoCapture(0)
+    if not cap.isOpened():
+        print("[LỖI] Không mở được camera!")
+        sys.exit(1)
 
-    cv2.fillConvexPoly(mask, np.int32(hullLeftEye), 255)
+    eyes_closed_since = None
+    blink_count = 0
+    prev_closed = False
+    win_name = "Blink Detection"
 
-    hullRightEye = []
-    for i in range(0, len(rightEyeIndex)):
-        hullRightEye.append((landmarks[rightEyeIndex[i]][0], landmarks[rightEyeIndex[i]][1]))
+    print("Phát hiện ngủ gật — q/ESC=thoát, r=reset")
 
-
-    cv2.fillConvexPoly(mask, np.int32(hullRightEye), 255)
-
-    leftEAR = eye_aspect_ratio(hullLeftEye)
-    rightEAR = eye_aspect_ratio(hullRightEye)
-
-    ear = (leftEAR + rightEAR) / 2.0
-    
-    if session_tracker:
-        session_tracker.add_ear_value(ear)
-
-    eyeStatus = 1          # 1 = Open, 0 = closed
-    if (ear < thresh):
-        eyeStatus = 0
-
-    return eyeStatus  
-
-def checkBlinkStatus(eyeStatus):
-    global state, blinkCount, drowsy, session_tracker
-    if(state >= 0 and state <= falseBlinkLimit):
-        if(eyeStatus):
-            state = 0
-            drowsy = 0  # Mở mắt → reset cảnh báo ngay
-        else:
-            state += 1
-
-    elif(state >= falseBlinkLimit and state < drowsyLimit):
-        if(eyeStatus):
-            blinkCount += 1
-            state = 0
-            drowsy = 0  # Mở mắt → reset cảnh báo ngay
-        else:
-            state += 1
-
-    else:
-        if(eyeStatus):
-            state = 0
-            drowsy = 0  # Mở mắt → reset cảnh báo ngay (trước đây = 3, không bao giờ reset)
-            blinkCount += 1
-            if session_tracker:
-                session_tracker.add_alert()
-        else:
-            drowsy = 3
-            # Phase 2: Track alert when drowsiness persists
-            if session_tracker:
-                session_tracker.add_alert()
-
-def getLandmarks(im):
-    imSmall = cv2.resize(im, None, 
-                            fx = 1.0/FACE_DOWNSAMPLE_RATIO, 
-                            fy = 1.0/FACE_DOWNSAMPLE_RATIO, 
-                            interpolation = cv2.INTER_LINEAR)
-
-    rects = detector(imSmall, 0)
-    if len(rects) == 0:
-        return 0
-
-    newRect = dlib.rectangle(int(rects[0].left() * FACE_DOWNSAMPLE_RATIO),
-                            int(rects[0].top() * FACE_DOWNSAMPLE_RATIO),
-                            int(rects[0].right() * FACE_DOWNSAMPLE_RATIO),
-                            int(rects[0].bottom() * FACE_DOWNSAMPLE_RATIO))
-
-    points = []
-    [points.append((p.x, p.y)) for p in predictor(im, newRect).parts()]
-    return points
-
-# Phase 2: Getter functions for external access (for session_history.py)
-def get_current_ear():
-    """Get the current EAR value"""
-    return current_ear
-
-def get_current_blink_count():
-    """Get the current blink count"""
-    return blinkCount
-
-def get_session_data():
-    """Get all current session data"""
-    return {
-        'ear': current_ear,
-        'blink_count': blinkCount,
-        'alerts': session_alerts,
-        'drowsy_state': drowsy,
-        'eye_state': state,
-        'session_active': session_active
-    }
-
-def get_session_ear_values():
-    """Get all EAR values collected in current session"""
-    return session_ear_values
-
-def start_new_session():
-    """Start a new tracking session"""
-    global session_tracker
-    if session_tracker:
-        session_tracker.end_session()
-    session_tracker = TempSessionTracker()
-
-def end_current_session():
-    """End the current tracking session"""
-    global session_tracker
-    if session_tracker:
-        session_tracker.end_session()
-        session_tracker = None
-
-capture = cv2.VideoCapture(0)
-
-for i in range(10):
-    ret, frame = capture.read()
-    if not capture.isOpened():
-        print("Error: Could not open webcam.")
-        sys.exit()
-
-totalTime = 0.0
-validFrames = 0
-dummyFrames = 100
-
-print("Caliberation in Progress!")
-while(validFrames < dummyFrames):
-    validFrames += 1
-    t = time.time()
-    ret, frame = capture.read()
-    if not ret or frame is None:
-        print("Error: Could not read frame from webcam.")
-        break 
-
-    height, width = frame.shape[:2]
-    IMAGE_RESIZE = np.float32(height)/RESIZE_HEIGHT
-    frame = cv2.resize(frame, None, 
-                        fx = 1/IMAGE_RESIZE, 
-                        fy = 1/IMAGE_RESIZE, 
-                        interpolation = cv2.INTER_LINEAR)
-
-    #adjusted = gamma_correction(frame)
-    adjusted = histogram_equalization(frame)
-
-    landmarks = getLandmarks(adjusted)
-    timeLandmarks = time.time() - t
-
-    if landmarks == 0:
-        validFrames -= 1
-        cv2.putText(frame, "Unable to detect face, Please check proper lighting", (10, 30), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
-        cv2.putText(frame, "or decrease FACE_DOWNSAMPLE_RATIO", (10, 50), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
-        cv2.imshow("Blink Detection", frame)
-        if cv2.waitKey(1) & 0xFF == 27:
+    while True:
+        ret, frame = cap.read()
+        if not ret:
             break
 
-    else:
-        totalTime += timeLandmarks
-print("Caliberation Complete!")
+        h, w = frame.shape[:2]
+        rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+        result = face_mesh.process(rgb)
 
-spf = totalTime/dummyFrames
-print("Current SPF (seconds per frame) is {:.2f} ms".format(spf * 1000))
+        ear = 0.3  # default
+        is_closed = False
 
-drowsyLimit = drowsyTime/spf
-falseBlinkLimit = blinkTime/spf
-print("drowsy limit: {}, false blink limit: {}".format(drowsyLimit, falseBlinkLimit))
+        if result.multi_face_landmarks:
+            lms = result.multi_face_landmarks[0].landmark
+            left_pts = get_eye_pts(lms, LEFT_EYE, w, h)
+            right_pts = get_eye_pts(lms, RIGHT_EYE, w, h)
 
-# Phase 2: Start session tracking
-session_tracker = TempSessionTracker()
+            left_ear = eye_aspect_ratio(left_pts)
+            right_ear = eye_aspect_ratio(right_pts)
+            ear = (left_ear + right_ear) / 2.0
 
-if __name__ == "__main__":
-    vid_writer = cv2.VideoWriter('output-low-light-2.avi',cv2.VideoWriter_fourcc('M','J','P','G'), 15, (frame.shape[1],frame.shape[0]))
-    while(1):
-        try:
-            t = time.time()
-            ret, frame = capture.read()
-            height, width = frame.shape[:2]
-            IMAGE_RESIZE = np.float32(height)/RESIZE_HEIGHT
-            frame = cv2.resize(frame, None, 
-                                fx = 1/IMAGE_RESIZE, 
-                                fy = 1/IMAGE_RESIZE, 
-                                interpolation = cv2.INTER_LINEAR)
+            is_closed = ear < EAR_THRESH
 
-            # adjusted = gamma_correction(frame)
-            adjusted = histogram_equalization(frame)
+            # Vẽ landmarks mắt
+            for pt in left_pts + right_pts:
+                cv2.circle(frame, pt, 1, (0, 255, 0), -1)
 
-            landmarks = getLandmarks(adjusted)
-            if landmarks == 0:
-                validFrames -= 1
-                cv2.putText(frame, "Unable to detect face, Please check proper lighting", (10, 30), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
-                cv2.putText(frame, "or decrease FACE_DOWNSAMPLE_RATIO", (10, 50), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
-                cv2.imshow("Blink Detection", frame)
-                if cv2.waitKey(1) & 0xFF == 27:
-                    break
-                continue
+            # Đếm blink
+            if prev_closed and not is_closed:
+                blink_count += 1
+            prev_closed = is_closed
 
-            eyeStatus = checkEyeStatus(landmarks)
-            checkBlinkStatus(eyeStatus)
+        # State machine
+        now = time.time()
+        if is_closed:
+            if eyes_closed_since is None:
+                eyes_closed_since = now
+            dur = now - eyes_closed_since
 
-            for i in range(0, len(leftEyeIndex)):
-                cv2.circle(frame, (landmarks[leftEyeIndex[i]][0], landmarks[leftEyeIndex[i]][1]), 1, (0, 0, 255), -1, lineType=cv2.LINE_AA)
-
-            for i in range(0, len(rightEyeIndex)):
-                cv2.circle(frame, (landmarks[rightEyeIndex[i]][0], landmarks[rightEyeIndex[i]][1]), 1, (0, 0, 255), -1, lineType=cv2.LINE_AA)
-
-            if drowsy:
-                cv2.putText(frame, "! ! ! CANH BAO NGU GAT ! ! !", (70, 50), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+            if dur >= DROWSY_SECS:
+                cv2.putText(frame, f"!!! CANH BAO NGU GAT ({dur:.1f}s) !!!",
+                            (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.9, (0, 0, 255), 2)
                 if not ALARM_ON:
                     ALARM_ON = True
-                    # Xóa queue cũ trước khi bắt đầu thread mới
                     while not threadStatusQ.empty():
                         threadStatusQ.get()
-                    thread = Thread(target=soundAlert, args=(sound_path, threadStatusQ,), daemon=True)
-                    thread.start()
-
+                    Thread(target=soundAlert, args=(sound_path, threadStatusQ), daemon=True).start()
             else:
-                cv2.putText(frame, "Blinks : {}".format(blinkCount), (460, 80), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0,0,255), 2, cv2.LINE_AA)
-                if ALARM_ON:
-                    ALARM_ON = False
-                    threadStatusQ.put(True)  # Gửi signal DỪNG cho thread âm thanh
-                    if AUDIO_LIB == 'pygame':
-                        try:
-                            pygame.mixer.stop()
-                        except Exception:
-                            pass
-
-
-            cv2.imshow("Blink Detection", frame)
-            vid_writer.write(frame)
-
-            k = cv2.waitKey(1) & 0xFF
-            if k == ord('r'):
-                state = 0
-                drowsy = 0
+                cv2.putText(frame, f"Mat nhep... ({dur:.1f}s)",
+                            (30, 50), cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 165, 255), 2)
+        else:
+            eyes_closed_since = None
+            if ALARM_ON:
                 ALARM_ON = False
-                threadStatusQ.put(not ALARM_ON)
-            elif k == ord('q') or k == 27:
-                break
-            # Đóng bằng nút X
-            if cv2.getWindowProperty("Blink Detection", cv2.WND_PROP_VISIBLE) < 1:
-                break
+                threadStatusQ.put(True)
+                if AUDIO_LIB == 'pygame':
+                    try:
+                        pygame.mixer.stop()
+                    except Exception:
+                        pass
 
-            # print("Time taken", time.time() - t)
+        # Info
+        cv2.putText(frame, f"EAR: {ear:.2f}  Blinks: {blink_count}",
+                    (30, frame.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
-        except Exception as e:
-            print(e)
+        cv2.imshow(win_name, frame)
 
-    # Phase 2: End session when detection stops
-    if session_tracker:
-        session_tracker.end_session()
+        k = cv2.waitKey(1) & 0xFF
+        if k == ord('q') or k == 27:
+            break
+        elif k == ord('r'):
+            eyes_closed_since = None
+            ALARM_ON = False
+            blink_count = 0
+            threadStatusQ.put(True)
+        if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
+            break
 
-    capture.release()
-    vid_writer.release()
+    if ALARM_ON:
+        threadStatusQ.put(True)
+    cap.release()
     cv2.destroyAllWindows()
+
+
+if __name__ == "__main__":
+    main()

@@ -83,10 +83,10 @@ def run_blink_detection(btn_blink=None):
 
 
 def run_behavior_detector(btn=None, use_yolo=True):
-    """Chạy Behavior Detector tích hợp YOLO + MediaPipe + Dlib"""
+    """Chạy Behavior Detector tích hợp YOLO + MediaPipe"""
     global behavior_proc, behavior_noyolo_proc
     proc_ref = behavior_proc if use_yolo else behavior_noyolo_proc
-    orig_text = "Phát hiện hành vi (YOLO + Dlib)" if use_yolo else "Phát hiện hành vi (Chỉ Dlib, không YOLO)"
+    orig_text = "Phát hiện hành vi (YOLO + AI)" if use_yolo else "Phát hiện hành vi (Không YOLO, nhẹ hơn)"
     # Nếu đang chạy → dừng lại
     if proc_ref and proc_ref.poll() is None:
         proc_ref.terminate()
@@ -266,7 +266,7 @@ def main():
     lbl_title.grid(row=0, column=0, columnspan=2, pady=(0, 10))
 
     # ── Nút cũ ────────────────────────────────────────────────────
-    lbl_basic = tk.Label(frame, text="Basic Detectors",
+    lbl_basic = tk.Label(frame, text="Phát hiện cơ bản",
         font=('Segoe UI', 9), bg="#f0f0f0", fg="#666666")
     lbl_basic.grid(row=1, column=0, columnspan=2)
 
@@ -283,19 +283,19 @@ def main():
     sep.grid(row=3, column=0, columnspan=2, sticky="ew", pady=10)
 
     # ── Nút Behavior Detector mới ──────────────────────────────────
-    lbl_adv = tk.Label(frame, text="Nâng cao - Phát hiện hành vi học sinh (YOLO + Dlib)",
+    lbl_adv = tk.Label(frame, text="Nâng cao - Phát hiện hành vi học sinh",
         font=('Segoe UI', 9), bg="#f0f0f0", fg="#333399")
     lbl_adv.grid(row=4, column=0, columnspan=2)
 
     btn_behavior = ttk.Button(frame,
-        text="Phát hiện hành vi (YOLO + Dlib)",
+        text="Phát hiện hành vi (YOLO + AI)",
         style="Accent.TButton")
     btn_behavior.config(command=lambda: run_behavior_detector(btn_behavior, use_yolo=True))
     btn_behavior.grid(row=5, column=0, columnspan=2,
                       padx=10, pady=6, sticky="ew")
 
     btn_behavior_noyolo = ttk.Button(frame,
-        text="Phát hiện hành vi (Chỉ Dlib, không YOLO)")
+        text="Phát hiện hành vi (Không YOLO, nhẹ hơn)")
     btn_behavior_noyolo.config(
         command=lambda: run_behavior_detector(btn_behavior_noyolo, use_yolo=False))
     btn_behavior_noyolo.grid(row=6, column=0, columnspan=2,
