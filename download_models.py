@@ -4,8 +4,14 @@ Script để tự động download các model files cần thiết cho Hệ thố
 """
 
 import os
+import sys
 import urllib.request
 import bz2
+
+# Fix encoding trên Windows (cp1252 không hỗ trợ tiếng Việt)
+if sys.stdout.encoding and sys.stdout.encoding.lower() not in ('utf-8', 'utf8'):
+    sys.stdout.reconfigure(encoding='utf-8', errors='replace')
+    sys.stderr.reconfigure(encoding='utf-8', errors='replace')
 import shutil
 from pathlib import Path
 
