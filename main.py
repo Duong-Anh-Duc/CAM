@@ -118,41 +118,59 @@ def run_behavior_detector(btn=None, use_yolo=True):
                 btn.config(text=orig_text)
     threading.Thread(target=check_proc, daemon=True).start()
 
+_cached_torch_cmd = None
+
 def _find_python_with_torch():
-    """Tìm Python interpreter có thể chạy torch (cross-platform)."""
+    """Tìm Python interpreter có thể chạy torch (cross-platform).
+    Trả về list command (không split string, tránh lỗi path có spaces)."""
+    global _cached_torch_cmd
+    if _cached_torch_cmd is not None:
+        return _cached_torch_cmd
+
     import shutil
     import platform
 
-    # Ưu tiên Python hiện tại (nếu đã cài torch)
+    # Ưu tiên Python hiện tại
     try:
         result = subprocess.run(
             [sys.executable, "-c", "import torch; print('ok')"],
             capture_output=True, text=True, timeout=10)
         if result.returncode == 0:
-            return sys.executable
+            _cached_torch_cmd = [sys.executable]
+            return _cached_torch_cmd
     except Exception:
         pass
 
-    # Trên Windows thử python, py -3.12, py -3.11, py -3.10
+    # Danh sách candidates: mỗi item là list command
     if platform.system() == "Windows":
-        candidates = ["python", "py -3.12", "py -3.11", "py -3.10"]
+        candidates = [
+            ["python"],
+            ["py", "-3.12"],
+            ["py", "-3.11"],
+            ["py", "-3.10"],
+        ]
     else:
-        candidates = ["python3.12", "python3.11", "python3.10", "python3"]
+        candidates = [
+            ["python3.12"],
+            ["python3.11"],
+            ["python3.10"],
+            ["python3"],
+        ]
 
-    for cmd in candidates:
-        parts = cmd.split()
-        exe = shutil.which(parts[0])
+    for cmd_parts in candidates:
+        exe = shutil.which(cmd_parts[0])
         if exe:
             try:
-                full_cmd = [exe] + parts[1:] + ["-c", "import torch; print('ok')"]
+                full_cmd = [exe] + cmd_parts[1:] + ["-c", "import torch; print('ok')"]
                 result = subprocess.run(full_cmd, capture_output=True, text=True, timeout=10)
                 if result.returncode == 0:
-                    return " ".join([exe] + parts[1:]) if len(parts) > 1 else exe
+                    _cached_torch_cmd = [exe] + cmd_parts[1:]
+                    return _cached_torch_cmd
             except Exception:
                 continue
 
-    # Fallback: trả về python hiện tại
-    return sys.executable
+    _cached_torch_cmd = [sys.executable]
+    return _cached_torch_cmd
 
 
 def run_resnet_detection(btn=None):
@@ -165,14 +183,13 @@ def run_resnet_detection(btn=None):
         if btn:
             btn.config(text=orig_text)
         return
-    py_exe = _find_python_with_torch()
+    py_cmd = _find_python_with_torch()
     script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "resnet_detector.py")
     if not os.path.exists(script):
         messagebox.showerror("Lỗi", f"Không tìm thấy: {script}")
         return
     try:
-        cmd = py_exe.split() + [script] if " " in py_exe else [py_exe, script]
-        proc = subprocess.Popen(cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc = subprocess.Popen(py_cmd + [script], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
     except Exception as e:
         messagebox.showerror("Lỗi", f"Không thể khởi động ResNet detector:\n{e}")
         return

@@ -104,10 +104,6 @@ def build():
         if os.path.exists(script):
             cmd.extend(["--add-data", f"{script}{sep}."])
 
-    # Thêm streamlit_app
-    if os.path.isdir("streamlit_app"):
-        cmd.extend(["--add-data", f"streamlit_app{sep}streamlit_app"])
-
     # Hidden imports
     for imp in HIDDEN_IMPORTS:
         cmd.extend(["--hidden-import", imp])

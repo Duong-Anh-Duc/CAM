@@ -41,22 +41,29 @@ from PIL import Image, ImageDraw, ImageFont
 
 def _find_font(size=18):
     """Tìm font hỗ trợ tiếng Việt trên hệ thống."""
-    font_paths = [
-        # macOS
-        "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
-        "/System/Library/Fonts/Supplemental/Arial.ttf",
-        "/Library/Fonts/Arial Unicode.ttf",
-        "/System/Library/Fonts/SFNSText.ttf",
-        "/System/Library/Fonts/SFNS.ttf",
-        "/System/Library/Fonts/Helvetica.ttc",
-        # Linux
-        "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
-        "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
-        "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
-        # Windows
-        "C:/Windows/Fonts/arial.ttf",
-        "C:/Windows/Fonts/segoeui.ttf",
-    ]
+    import platform
+    font_paths = []
+    if platform.system() == "Windows":
+        win_fonts = os.path.join(os.environ.get("WINDIR", "C:\\Windows"), "Fonts")
+        font_paths = [
+            os.path.join(win_fonts, "arial.ttf"),
+            os.path.join(win_fonts, "segoeui.ttf"),
+            os.path.join(win_fonts, "msyh.ttc"),
+            os.path.join(win_fonts, "malgun.ttf"),
+        ]
+    elif platform.system() == "Darwin":
+        font_paths = [
+            "/System/Library/Fonts/Supplemental/Arial Unicode.ttf",
+            "/System/Library/Fonts/Supplemental/Arial.ttf",
+            "/Library/Fonts/Arial Unicode.ttf",
+            "/System/Library/Fonts/Helvetica.ttc",
+        ]
+    else:
+        font_paths = [
+            "/usr/share/fonts/truetype/dejavu/DejaVuSans.ttf",
+            "/usr/share/fonts/truetype/liberation/LiberationSans-Regular.ttf",
+            "/usr/share/fonts/truetype/ubuntu/Ubuntu-R.ttf",
+        ]
     for fp in font_paths:
         if os.path.exists(fp):
             try:
