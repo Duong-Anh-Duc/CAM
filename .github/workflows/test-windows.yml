@@ -16,13 +16,16 @@ jobs:
         with:
           python-version: '3.12'
 
+      - name: Install Visual Studio Build Tools
+        uses: ilammy/msvc-dev-cmd@v1
+
       - name: Install PyTorch (CPU)
         run: pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
 
       - name: Install cmake + dlib
         run: |
           pip install cmake
-          pip install dlib
+          pip install dlib --verbose
 
       - name: Install remaining dependencies
         run: pip install -r requirements.txt
@@ -39,5 +42,4 @@ jobs:
       - name: Test compatibility
         env:
           PYTHONIOENCODING: utf-8
-        run: |
-          python test_windows.py
+        run: python test_windows.py
