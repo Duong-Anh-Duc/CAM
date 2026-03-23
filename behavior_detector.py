@@ -359,9 +359,8 @@ class PersonState:
             return
         elapsed = time.time() - self._calibration_start
         if elapsed <= EAR_CALIBRATION_SECS:
-            # Chỉ lấy khi pitch/yaw hợp lý (loại outlier lúc đang xoay đầu)
-            if abs(pitch) < 40 and abs(yaw) < 40:
-                self._pose_calibration_samples.append((pitch, yaw))
+            # Lấy tất cả sample (đã fix pitch ở _solve_head_pose)
+            self._pose_calibration_samples.append((pitch, yaw))
         else:
             if len(self._pose_calibration_samples) >= 10:
                 pitches = sorted([s[0] for s in self._pose_calibration_samples])
@@ -438,12 +437,16 @@ class AudioManager:
     def stop(self):
         if self._alarm_on:
             self._alarm_on = False
+            # Xóa queue cũ
+            while not self._stop_queue.empty():
+                self._stop_queue.get()
+            self._stop_queue.put(True)
+            # Dừng âm thanh ngay lập tức
             if AUDIO_LIB == 'pygame':
                 try:
                     pygame.mixer.stop()
                 except Exception:
                     pass
-            self._stop_queue.put(True)
 
     def _play_loop(self):
         if AUDIO_LIB == 'pygame':
@@ -452,14 +455,15 @@ class AudioManager:
                 while self._alarm_on:
                     if not self._stop_queue.empty():
                         self._stop_queue.get()
-                        break
+                        pygame.mixer.stop()
+                        return
                     sound.play()
-                    while pygame.mixer.get_busy() and self._alarm_on:
-                        if not self._stop_queue.empty():
-                            self._stop_queue.get()
+                    # Check dừng mỗi 50ms thay vì chờ hết bài
+                    while pygame.mixer.get_busy():
+                        if not self._alarm_on or not self._stop_queue.empty():
                             pygame.mixer.stop()
                             return
-                        pygame.time.Clock().tick(10)
+                        pygame.time.wait(50)
             except Exception as e:
                 print(f"[AUDIO] pygame error: {e}")
         elif AUDIO_LIB == 'playsound':
@@ -718,7 +722,22 @@ class FacialAnalyzer:
 
         rmat, _ = cv2.Rodrigues(rvec)
         euler, _, _, _, _, _ = cv2.RQDecomp3x3(rmat)
-        return float(euler[0]), float(euler[1]), float(euler[2])
+        pitch = float(euler[0])
+        yaw   = float(euler[1])
+        roll  = float(euler[2])
+
+        # Fix: RQDecomp3x3 có thể trả pitch bị lệch ±180°
+        # Ví dụ: nhìn thẳng → pitch = -137° thay vì ~0°
+        if pitch > 90:
+            pitch = pitch - 180
+        elif pitch < -90:
+            pitch = pitch + 180
+        if yaw > 90:
+            yaw = yaw - 180
+        elif yaw < -90:
+            yaw = yaw + 180
+
+        return pitch, yaw, roll
 
     # ── Gaze ratio (MediaPipe iris) ─────────────────────────────────────
     def _gaze_ratio_mp(self, lms, w, h):
@@ -906,18 +925,26 @@ class FaceTracker:
             h, w = frame.shape[:2]
             x1, y1 = max(0, x1), max(0, y1)
             x2, y2 = min(w, x2), min(h, y2)
+            if x2 - x1 < 20 or y2 - y1 < 20:
+                return None
             rect = dlib.rectangle(x1, y1, x2, y2)
 
             # Cần shape predictor để align face
-            sp_path = os.path.join(_BASE_DIR, "models", "shape_predictor_68_face_landmarks.dat")
             if not hasattr(self, '_sp') or self._sp is None:
+                sp_path = os.path.join(_BASE_DIR, "models", "shape_predictor_68_face_landmarks.dat")
                 if os.path.exists(sp_path):
                     self._sp = dlib.shape_predictor(sp_path)
                 else:
                     return None
 
-            shape = self._sp(frame, rect)
-            embedding = np.array(self._face_rec_model.compute_face_descriptor(frame, shape))
+            # dlib cần RGB frame cho face_recognition
+            if len(frame.shape) == 3 and frame.shape[2] == 3:
+                rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+            else:
+                rgb = frame
+
+            shape = self._sp(rgb, rect)
+            embedding = np.array(self._face_rec_model.compute_face_descriptor(rgb, shape))
             return embedding
         except Exception:
             return None
@@ -953,6 +980,7 @@ class FaceTracker:
                         best_pid = pid
             if best_pid is not None and best_dist < FACE_TRACK_EMBED_THRESH:
                 self._reid_pool.pop(best_pid, None)
+                print(f"[Re-ID] Nhận diện lại HS #{best_pid + 1} bằng embedding (dist={best_dist:.3f})")
                 return best_pid
 
         # --- Fallback: Nếu chỉ có 1 person trong pool → gán luôn ---
@@ -960,6 +988,7 @@ class FaceTracker:
                      if now - v['last_seen'] <= FACE_TRACK_REID_SECS}
         if len(remaining) == 1:
             pid = next(iter(remaining))
+            print(f"[Re-ID] Nhận diện lại HS #{pid + 1} (1 người duy nhất trong pool)")
             self._reid_pool.pop(pid, None)
             return pid
 
@@ -1556,7 +1585,7 @@ class BehaviorDetector:
         self._last_alert_time: dict[str, float] = {}
         self._alert_cooldown = 8.0
         self._alarm_clear_counter = 0          # hysteresis: frames liên tiếp không có high alert
-        self._ALARM_CLEAR_FRAMES  = 10         # cần 10 frame sạch liên tiếp mới dừng alarm
+        self._ALARM_CLEAR_FRAMES  = 2          # cần 2 frame sạch liên tiếp → dừng alarm gần như ngay
 
         print(f"  YOLO      : {'OK YOLOv8' if (self.yolo and self.yolo.available) else 'OFF'}")
         print(f"  MediaPipe : {'OK FaceMesh' if MP_AVAILABLE else 'OFF'}")
@@ -1751,13 +1780,14 @@ class BehaviorDetector:
                         (out.shape[1] - 100, 20),
                         cv2.FONT_HERSHEY_SIMPLEX, 0.5, (150, 150, 150), 1)
 
-            cv2.imshow("Classroom Attention Monitor", out)
+            _win = "Classroom Attention Monitor"
+            cv2.imshow(_win, out)
 
             if vid_writer:
                 vid_writer.write(out)
 
             key = cv2.waitKey(1) & 0xFF
-            if key == ord('q'):
+            if key == ord('q') or key == 27:
                 break
             elif key == ord('r'):
                 self.behavior.states.clear()
@@ -1769,6 +1799,9 @@ class BehaviorDetector:
                 fname = f"screenshot_{ts}.jpg"
                 cv2.imwrite(fname, out)
                 print(f"[SCREENSHOT] {fname}")
+            # Đóng bằng nút X
+            if cv2.getWindowProperty(_win, cv2.WND_PROP_VISIBLE) < 1:
+                break
 
         cap.release()
         if vid_writer:

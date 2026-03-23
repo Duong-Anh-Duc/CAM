@@ -120,9 +120,8 @@ def histogram_equalization(image):
 def soundAlert(path, threadStatusQ):
     import traceback
     if AUDIO_LIB is None:
-        print("Sound alert skipped: No audio library available")
         return
-        
+
     if AUDIO_LIB == 'pygame':
         try:
             sound = pygame.mixer.Sound(path)
@@ -130,13 +129,19 @@ def soundAlert(path, threadStatusQ):
                 if not threadStatusQ.empty():
                     FINISHED = threadStatusQ.get()
                     if FINISHED:
-                        break
+                        pygame.mixer.stop()
+                        return
                 sound.play()
+                # Check dừng mỗi 50ms — dừng NGAY khi nhận signal
                 while pygame.mixer.get_busy():
-                    pygame.time.Clock().tick(10)
+                    if not threadStatusQ.empty():
+                        FINISHED = threadStatusQ.get()
+                        if FINISHED:
+                            pygame.mixer.stop()
+                            return
+                    pygame.time.wait(50)
         except Exception as e:
-            print(f"Error playing sound with pygame: {e}")
-            traceback.print_exc()
+            print(f"Error playing sound: {e}")
     else:  # playsound
         while True:
             if not threadStatusQ.empty():
@@ -146,8 +151,7 @@ def soundAlert(path, threadStatusQ):
             try:
                 playsound.playsound(path)
             except Exception as e:
-                print(f"Error playing sound with playsound: {e}")
-                traceback.print_exc()
+                print(f"Error playing sound: {e}")
                 break
 
 def eye_aspect_ratio(eye):
@@ -195,28 +199,25 @@ def checkBlinkStatus(eyeStatus):
     if(state >= 0 and state <= falseBlinkLimit):
         if(eyeStatus):
             state = 0
-
+            drowsy = 0  # Mở mắt → reset cảnh báo ngay
         else:
             state += 1
 
     elif(state >= falseBlinkLimit and state < drowsyLimit):
         if(eyeStatus):
-            blinkCount += 1 
+            blinkCount += 1
             state = 0
-
+            drowsy = 0  # Mở mắt → reset cảnh báo ngay
         else:
             state += 1
-
 
     else:
         if(eyeStatus):
             state = 0
-            drowsy = 3
+            drowsy = 0  # Mở mắt → reset cảnh báo ngay (trước đây = 3, không bao giờ reset)
             blinkCount += 1
-            # Phase 2: Track alert when drowsiness is detected
             if session_tracker:
                 session_tracker.add_alert()
-
         else:
             drowsy = 3
             # Phase 2: Track alert when drowsiness persists
@@ -318,7 +319,7 @@ while(validFrames < dummyFrames):
         validFrames -= 1
         cv2.putText(frame, "Unable to detect face, Please check proper lighting", (10, 30), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
         cv2.putText(frame, "or decrease FACE_DOWNSAMPLE_RATIO", (10, 50), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
-        cv2.imshow("Phát hiện ngủ gật học sinh", frame)
+        cv2.imshow("Blink Detection", frame)
         if cv2.waitKey(1) & 0xFF == 27:
             break
 
@@ -357,7 +358,7 @@ if __name__ == "__main__":
                 validFrames -= 1
                 cv2.putText(frame, "Unable to detect face, Please check proper lighting", (10, 30), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
                 cv2.putText(frame, "or decrease FACE_DOWNSAMPLE_RATIO", (10, 50), cv2.FONT_HERSHEY_COMPLEX, 0.5, (0, 0, 255), 1, cv2.LINE_AA)
-                cv2.imshow("Phát hiện ngủ gật học sinh", frame)
+                cv2.imshow("Blink Detection", frame)
                 if cv2.waitKey(1) & 0xFF == 27:
                     break
                 continue
@@ -372,30 +373,40 @@ if __name__ == "__main__":
                 cv2.circle(frame, (landmarks[rightEyeIndex[i]][0], landmarks[rightEyeIndex[i]][1]), 1, (0, 0, 255), -1, lineType=cv2.LINE_AA)
 
             if drowsy:
-                cv2.putText(frame, "! ! ! CẢNH BÁO NGỦ GẬT ! ! !", (70, 50), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
+                cv2.putText(frame, "! ! ! CANH BAO NGU GAT ! ! !", (70, 50), cv2.FONT_HERSHEY_COMPLEX, 1, (0, 0, 255), 2, cv2.LINE_AA)
                 if not ALARM_ON:
                     ALARM_ON = True
-                    threadStatusQ.put(not ALARM_ON)
+                    # Xóa queue cũ trước khi bắt đầu thread mới
+                    while not threadStatusQ.empty():
+                        threadStatusQ.get()
                     thread = Thread(target=soundAlert, args=(sound_path, threadStatusQ,), daemon=True)
                     thread.start()
 
             else:
                 cv2.putText(frame, "Blinks : {}".format(blinkCount), (460, 80), cv2.FONT_HERSHEY_COMPLEX, 0.8, (0,0,255), 2, cv2.LINE_AA)
-                # (0, 400)
-                ALARM_ON = False
+                if ALARM_ON:
+                    ALARM_ON = False
+                    threadStatusQ.put(True)  # Gửi signal DỪNG cho thread âm thanh
+                    if AUDIO_LIB == 'pygame':
+                        try:
+                            pygame.mixer.stop()
+                        except Exception:
+                            pass
 
 
-            cv2.imshow("Phát hiện ngủ gật học sinh", frame)
+            cv2.imshow("Blink Detection", frame)
             vid_writer.write(frame)
 
-            k = cv2.waitKey(1) 
+            k = cv2.waitKey(1) & 0xFF
             if k == ord('r'):
                 state = 0
                 drowsy = 0
                 ALARM_ON = False
                 threadStatusQ.put(not ALARM_ON)
-
-            elif k == ord('q'):
+            elif k == ord('q') or k == 27:
+                break
+            # Đóng bằng nút X
+            if cv2.getWindowProperty("Blink Detection", cv2.WND_PROP_VISIBLE) < 1:
                 break
 
             # print("Time taken", time.time() - t)

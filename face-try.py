@@ -51,10 +51,13 @@ try:
         for (x, y, w, h) in faces:
             cv2.rectangle(img, (x, y), (x + w, y + h), (255, 0, 0), 3)
 
-        cv2.imshow('Phát hiện khuôn mặt học sinh', img)
+        cv2.imshow('Face Detection', img)
 
-        if cv2.waitKey(1) & 0xFF == ord('q'):
-            print("[INFO] Exiting on user request.")
+        key = cv2.waitKey(1) & 0xFF
+        if key == ord('q') or key == 27:  # q hoặc ESC
+            break
+        # Đóng bằng nút X
+        if cv2.getWindowProperty('Face Detection', cv2.WND_PROP_VISIBLE) < 1:
             break
 
 except KeyboardInterrupt:

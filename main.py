@@ -24,7 +24,7 @@ def _start_proc(script, args_extra=None):
         return None
     args = [sys.executable, script] + (args_extra or [])
     try:
-        return subprocess.Popen(args, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        return subprocess.Popen(args)
     except Exception as e:
         messagebox.showerror("Lỗi", f"Không thể khởi động:\n{e}")
         return None
@@ -189,7 +189,7 @@ def run_resnet_detection(btn=None):
         messagebox.showerror("Lỗi", f"Không tìm thấy: {script}")
         return
     try:
-        proc = subprocess.Popen(py_cmd + [script], stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        proc = subprocess.Popen(py_cmd + [script])
     except Exception as e:
         messagebox.showerror("Lỗi", f"Không thể khởi động ResNet detector:\n{e}")
         return

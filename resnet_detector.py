@@ -174,6 +174,7 @@ class AudioManager:
     def stop(self):
         with self._lock:
             self._playing = False
+        # Dừng ngay lập tức
         if self._lib == "pygame" and self._sound is not None:
             try:
                 self._sound.stop()
@@ -238,7 +239,8 @@ _transform = T.Compose([
 
 
 def predict_eye(model, device, eye_bgr, closed_idx: int):
-    """Trả về (is_closed: bool, closed_prob: float)."""
+    """Trả về (is_closed: bool, drowsy_score: float 0-1).
+    Dùng hiệu logit (sleepy - awake) qua sigmoid để có score biến động mượt."""
     if eye_bgr is None or eye_bgr.size == 0:
         return False, 0.0
     h, w = eye_bgr.shape[:2]
@@ -246,9 +248,12 @@ def predict_eye(model, device, eye_bgr, closed_idx: int):
         return False, 0.0
     tensor = _transform(eye_bgr).unsqueeze(0).to(device)
     with torch.no_grad():
-        probs = torch.softmax(model(tensor), dim=1)[0]
-    closed_prob = probs[closed_idx].item()
-    return closed_prob > 0.5, closed_prob
+        logits = model(tensor)[0]
+        awake_idx = 1 - closed_idx
+        # Hiệu logit chia temperature lớn → score biến động mượt
+        diff = (logits[closed_idx] - logits[awake_idx]).item()
+        score = 1.0 / (1.0 + np.exp(-diff / 8.0))  # temperature=8
+    return score > 0.5, score
 
 
 def get_eye_roi(frame, landmarks, eye_indices, padding: int = EYE_PADDING):
@@ -351,12 +356,32 @@ def main():
             x2, y2 = face.right(), face.bottom()
             cv2.rectangle(frame, (x1, y1), (x2, y2), (100, 255, 100), 2)
 
-            # Tách vùng mắt
+            # Tính EAR (Eye Aspect Ratio) — phản hồi nhắm mắt tức thì
+            from scipy.spatial import distance as dist
+            left_pts = [(landmarks.part(i).x, landmarks.part(i).y) for i in LEFT_EYE_IDX]
+            right_pts = [(landmarks.part(i).x, landmarks.part(i).y) for i in RIGHT_EYE_IDX]
+            def _ear(pts):
+                A = dist.euclidean(pts[1], pts[5])
+                B = dist.euclidean(pts[2], pts[4])
+                C = dist.euclidean(pts[0], pts[3])
+                return (A + B) / (2.0 * max(C, 1e-6))
+            ear = (_ear(left_pts) + _ear(right_pts)) / 2.0
+            ear_closed = ear < 0.22
+
+            # Tách vùng mắt + ResNet predict
             left_roi,  left_rect  = get_eye_roi(frame, landmarks, LEFT_EYE_IDX)
             right_roi, right_rect = get_eye_roi(frame, landmarks, RIGHT_EYE_IDX)
 
             l_closed, l_prob = predict_eye(model, device, left_roi,  closed_idx)
             r_closed, r_prob = predict_eye(model, device, right_roi, closed_idx)
+
+            # Kết hợp: EAR (nhanh) + ResNet (AI) → score cuối
+            # Nếu EAR phát hiện nhắm mắt → boost score lên
+            if ear_closed:
+                l_prob = max(l_prob, 0.7)  # EAR nhắm → ít nhất 70%
+                r_prob = max(r_prob, 0.7)
+                l_closed = True
+                r_closed = True
 
             # EMA
             left_prob_ema  = EMA_ALPHA * l_prob + (1 - EMA_ALPHA) * left_prob_ema
@@ -369,6 +394,10 @@ def main():
             r_col = (0, 0, 255) if r_closed else (0, 220, 0)
             cv2.rectangle(frame, (lx, ly), (lx + lw, ly + lh), l_col, 1)
             cv2.rectangle(frame, (rx, ry), (rx + rw, ry + rh), r_col, 1)
+
+            # Hiện EAR trên frame
+            put_vn_text(frame, f"EAR: {ear:.2f}", (x1, y2 + 5),
+                        font_size=14, color=(255, 255, 0))
 
             both_closed = l_closed and r_closed
 
@@ -420,15 +449,19 @@ def main():
         draw_prob_bar(frame, bw + 30, frame.shape[0] - 28, bw, 22,
                       right_prob_ema, "Mắt phải")
 
-        cv2.imshow("Phát hiện Ngủ Gật - ResNet AI  (q=thoát, r=reset)", frame)
+        win_name = "ResNet AI Detector"
+        cv2.imshow(win_name, frame)
 
         key = cv2.waitKey(1) & 0xFF
-        if key in (ord("q"), 27):   # q hoặc ESC
+        if key in (ord("q"), 27):
             break
         elif key == ord("r"):
             eyes_closed_since = None
             alarm_on = False
             audio.stop()
+        # Đóng bằng nút X
+        if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
+            break
 
     audio.stop()
     cap.release()
