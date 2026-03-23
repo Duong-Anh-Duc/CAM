@@ -35,12 +35,12 @@ jobs:
       - name: Test imports
         env:
           PYTHONIOENCODING: utf-8
+        shell: bash
         run: |
-          python -c "
+          python << 'PYEOF'
           import sys
           print(f'Python: {sys.version}')
 
-          # Test core imports
           import cv2; print(f'OpenCV: {cv2.__version__}')
           import dlib; print('Dlib: OK')
           import numpy; print(f'NumPy: {numpy.__version__}')
@@ -50,11 +50,9 @@ jobs:
           import ultralytics; print(f'Ultralytics: {ultralytics.__version__}')
           import tkinter; print('Tkinter: OK')
 
-          # Test project modules
           import behavior_detector; print('behavior_detector: OK')
           import license_manager; print('license_manager: OK')
 
-          # Test models exist
           import os
           models = [
               'models/shape_predictor_68_face_landmarks.dat',
@@ -67,18 +65,17 @@ jobs:
               status = 'OK' if os.path.exists(m) else 'MISSING'
               print(f'  {m}: {status}')
 
-          # Test ResNet model load
           if os.path.exists('models/resnet_drowsiness.pth'):
               ckpt = torch.load('models/resnet_drowsiness.pth', map_location='cpu', weights_only=False)
-              print(f'ResNet model: OK (val_acc={ckpt.get(\"val_acc\", \"N/A\"):.2f}%)')
+              acc = ckpt.get('val_acc', 0)
+              print(f'ResNet model: OK (val_acc={acc:.2f}%)')
           else:
-              print('ResNet model: NOT FOUND (cần train)')
+              print('ResNet model: NOT FOUND (can train)')
 
-          # Test font detection (Windows)
           from behavior_detector import _find_font
           font = _find_font(18)
           print(f'Font: {font}')
 
           print()
           print('=== TAT CA OK - Windows tuong thich ===')
-          "
+          PYEOF
