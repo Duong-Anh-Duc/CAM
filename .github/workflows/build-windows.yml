@@ -1,0 +1,91 @@
+name: Build Windows EXE
+
+on:
+  workflow_dispatch:  # Chạy thủ công từ GitHub UI
+  push:
+    tags:
+      - 'v*'         # Hoặc tự động khi tạo tag v1.0, v1.1...
+
+jobs:
+  build-windows:
+    runs-on: windows-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v4
+
+      - name: Setup Python 3.12
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install cmake
+          pip install dlib
+          pip install -r requirements.txt
+          pip install torch torchvision --index-url https://download.pytorch.org/whl/cpu
+          pip install pyinstaller
+
+      - name: Download models
+        run: |
+          echo y | python download_models.py
+
+      - name: Build EXE
+        run: |
+          python -c "
+          import subprocess, sys, os, platform
+
+          APP_NAME = 'GiamSatHocSinh'
+          sep = ';'
+
+          cmd = [
+              sys.executable, '-m', 'PyInstaller',
+              '--name', APP_NAME,
+              '--noconfirm',
+              '--windowed',
+          ]
+
+          data_files = [
+              ('alarm.wav', '.'),
+              ('yolov8n.pt', '.'),
+              ('models/shape_predictor_68_face_landmarks.dat', 'models'),
+              ('models/haarcascade_frontalface_default.xml', 'models'),
+              ('models/dlib_face_recognition_resnet_model_v1.dat', 'models'),
+          ]
+
+          if os.path.exists('models/resnet_drowsiness.pth'):
+              data_files.append(('models/resnet_drowsiness.pth', 'models'))
+
+          scripts = [
+              'behavior_detector.py', 'blinkDetect.py', 'face-try.py',
+              'resnet_detector.py', 'app_gui.py', 'train_resnet.py',
+              'download_models.py', 'license_manager.py',
+          ]
+
+          for src, dst in data_files:
+              if os.path.exists(src):
+                  cmd.extend(['--add-data', f'{src}{sep}{dst}'])
+
+          for s in scripts:
+              if os.path.exists(s):
+                  cmd.extend(['--add-data', f'{s}{sep}.'])
+
+          if os.path.isdir('streamlit_app'):
+              cmd.extend(['--add-data', f'streamlit_app{sep}streamlit_app'])
+
+          for imp in ['cv2','dlib','numpy','scipy','scipy.spatial','PIL','PIL.Image',
+                      'PIL.ImageDraw','PIL.ImageFont','pygame','mediapipe',
+                      'ultralytics','torch','torchvision','tkinter']:
+              cmd.extend(['--hidden-import', imp])
+
+          cmd.append('main.py')
+          subprocess.run(cmd, check=True)
+          "
+
+      - name: Upload EXE artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: GiamSatHocSinh-Windows
+          path: dist/GiamSatHocSinh/
+          retention-days: 30
