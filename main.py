@@ -110,12 +110,7 @@ def run_behavior_detector(btn=None, use_yolo=True):
         btn.config(text=f"DỪNG – {orig_text}")
     def check_proc():
         try:
-            stdout, stderr = proc.communicate()
-            if proc.returncode not in _NORMAL_EXIT_CODES:
-                err = stderr.decode(errors='replace') if stderr else "Unknown error"
-                if "KeyboardInterrupt" not in err:
-                    messagebox.showerror("Lỗi Behavior Detector",
-                        f"Thoát với code {proc.returncode}:\n{err[-600:]}")
+            proc.communicate()
         except Exception:
             pass
         finally:
@@ -186,12 +181,7 @@ def run_resnet_detection(btn=None):
         btn.config(text=f"DỪNG – {orig_text}")
     def check_proc():
         try:
-            stdout, stderr = proc.communicate()
-            if proc.returncode not in _NORMAL_EXIT_CODES:
-                err = stderr.decode(errors="replace") if stderr else ""
-                if "KeyboardInterrupt" not in err and err.strip():
-                    messagebox.showerror("Lỗi ResNet Detector",
-                        f"Thoát với code {proc.returncode}:\n{err[-600:]}")
+            proc.communicate()
         except Exception:
             pass
         finally:
@@ -371,8 +361,4 @@ def main():
     root.mainloop()
 
 if __name__ == "__main__":
-    # Kiểm tra license trước khi chạy app
-    from license_manager import check_or_prompt
-    if not check_or_prompt():
-        sys.exit(0)
     main()
