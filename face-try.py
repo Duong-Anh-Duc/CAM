@@ -48,8 +48,20 @@ try:
             print(f"[ERROR] detectMultiScale failed: {e}")
             continue
 
-        for (x, y, w, h) in faces:
+        for i, (x, y, w, h) in enumerate(faces):
             cv2.rectangle(img, (x, y), (x + w, y + h), (255, 0, 0), 3)
+            cv2.putText(img, f"Khuon mat #{i+1}", (x, y - 10),
+                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, (255, 0, 0), 2)
+
+        if len(faces) > 0:
+            status = f"Phat hien {len(faces)} khuon mat"
+            color = (0, 255, 0)
+        else:
+            status = "Khong phat hien khuon mat"
+            color = (0, 0, 255)
+
+        cv2.putText(img, status, (20, 40),
+                    cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
 
         cv2.imshow('Face Detection', img)
 

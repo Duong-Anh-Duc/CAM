@@ -15,8 +15,8 @@ Hệ thống phát hiện hành vi học sinh theo thời gian thực thông qua
 | Thư viện | Phiên bản | Chức năng |
 |----------|-----------|-----------|
 | OpenCV | >= 4.8 | Đọc camera, xử lý khung hình, vẽ overlay |
-| Dlib | 19.24 | Phát hiện khuôn mặt, 68 điểm landmark |
-| MediaPipe | >= 0.10 | Phân tích khuôn mặt (fallback khi thiếu Dlib) |
+| MediaPipe | >= 0.10 | Phân tích khuôn mặt, EAR, MAR, Gaze (dùng chính) |
+| Dlib | 19.24 | Fallback khi MediaPipe không cài được |
 | Ultralytics YOLOv8 | >= 8.0 | Phát hiện điện thoại, nhiều người |
 
 ### Machine Learning / Deep Learning

@@ -4,8 +4,9 @@ BEHAVIOR DETECTOR – Hệ thống giám sát tập trung học sinh (v2 – Opt
 =============================================================================
 Phát hiện hành vi ngủ gật & mất tập trung bằng:
   • YOLOv8 (ultralytics)  : phát hiện người + điện thoại
-  • Dlib 68-landmark      : EAR, MAR, Head Pose
-  • MediaPipe FaceMesh    : fallback khi Dlib tắt
+  • MediaPipe FaceMesh    : EAR, MAR, Head Pose, Gaze/Iris (dùng chính)
+  • Dlib 68-landmark      : fallback khi MediaPipe không cài được
+  • Fallback tự động      : nếu thiếu MediaPipe → dùng Dlib toàn bộ
   • OpenCV                : xử lý ảnh, overlay
 
 Hành vi phát hiện:
@@ -865,13 +866,17 @@ class FacialAnalyzer:
         return faces
 
     def analyze(self, frame: np.ndarray):
-        """Ưu tiên MediaPipe, fallback Dlib"""
-        faces = []
-        if self.use_mp and mp_face_mesh is not None:
-            faces = self.analyze_mp(frame)
-        if not faces:
-            faces = self.analyze_dlib(frame)
-        return faces
+        """
+        MediaPipe là chính. Dlib chỉ dùng khi MediaPipe không cài được.
+          - MediaPipe có  → analyze_mp() toàn bộ
+          - Chỉ có Dlib   → analyze_dlib() toàn bộ
+          - Không có gì   → []
+        """
+        if self.use_mp:
+            return self.analyze_mp(frame)
+        elif self.use_dlib:
+            return self.analyze_dlib(frame)
+        return []
 
 
 # =============================================================================

@@ -100,6 +100,8 @@ def main():
     eyes_closed_since = None
     blink_count = 0
     prev_closed = False
+    total_frames = 0
+    closed_frames = 0
     win_name = "Blink Detection"
 
     print("Phát hiện ngủ gật — q/ESC=thoát, r=reset")
@@ -136,6 +138,13 @@ def main():
                 blink_count += 1
             prev_closed = is_closed
 
+        # Thống kê %
+        total_frames += 1
+        if is_closed:
+            closed_frames += 1
+        pct_closed = (closed_frames / total_frames) * 100
+        pct_open = 100 - pct_closed
+
         # State machine
         now = time.time()
         if is_closed:
@@ -166,7 +175,11 @@ def main():
                         pass
 
         # Info
-        cv2.putText(frame, f"EAR: {ear:.2f}  Blinks: {blink_count}",
+        eye_status = "NHAM" if is_closed else "MO"
+        eye_color = (0, 0, 255) if is_closed else (0, 255, 0)
+        cv2.putText(frame, f"Mat: {eye_status}  EAR: {ear:.2f}",
+                    (30, frame.shape[0] - 60), cv2.FONT_HERSHEY_SIMPLEX, 0.6, eye_color, 2)
+        cv2.putText(frame, f"Blinks: {blink_count}  |  Mo: {pct_open:.1f}%  Nham: {pct_closed:.1f}%",
                     (30, frame.shape[0] - 20), cv2.FONT_HERSHEY_SIMPLEX, 0.6, (200, 200, 200), 1)
 
         cv2.imshow(win_name, frame)
@@ -178,6 +191,8 @@ def main():
             eyes_closed_since = None
             ALARM_ON = False
             blink_count = 0
+            total_frames = 0
+            closed_frames = 0
             threadStatusQ.put(True)
         if cv2.getWindowProperty(win_name, cv2.WND_PROP_VISIBLE) < 1:
             break
