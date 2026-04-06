@@ -38,6 +38,7 @@ VN_LABELS = {
     "MICROSLEEP"  : "Ngủ sâu",
     "YAWNING"     : "Ngáp",
     "HEAD_DOWN"   : "Cúi đầu",
+    "HEAD_UP"     : "Ngẩng đầu",
     "HEAD_TURN"   : "Quay đầu",
     "PHONE_USE"   : "Điện thoại",
     "DISTRACTED"  : "Mất tập trung",
@@ -596,6 +597,7 @@ class CAMApp:
         if self.detector:
             self.detector.behavior.states.clear()
             self.detector._last_alert_time.clear()
+            self.detector._alert_active.clear()
             self.detector.all_alerts.clear()
             self.detector._alarm_clear_counter = 0
             # Reset face tracker để gán lại person-id từ đầu

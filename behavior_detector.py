@@ -171,10 +171,10 @@ MAR_YAWN_MAX_SECS     = 6.0        # ngáp tối đa 6s (lâu hơn = nói chuy�
 MAR_TALK_VARIANCE     = 0.04       # nếu variance MAR > 0.04 trong 1s → đang nói
 
 # --- Head Pose (độ) ---------------------------------------------------
-PITCH_DOWN_THRESH     = 18         # cúi đầu > 18°
-PITCH_UP_THRESH       = -20        # ngẩng đầu
-YAW_THRESH            = 25         # quay đầu ngang > 25°
-HEAD_POSE_FRAMES      = 12         # frame liên tiếp mới cảnh báo
+PITCH_DOWN_THRESH     = 18         # cúi đầu > 18° so với baseline
+PITCH_UP_THRESH       = -18        # ngẩng đầu > 18°
+YAW_THRESH            = 22         # quay đầu ngang > 22° so với baseline
+HEAD_POSE_FRAMES      = 15         # ~0.6-1s liên tiếp mới cảnh báo (tránh nhầm)
 
 # --- Gaze detection (iris-based, MediaPipe) ----------------------------
 GAZE_OFF_CENTER_THRESH = 0.28      # iris lệch khỏi center mắt > 28% = mất tập trung
@@ -191,7 +191,7 @@ COMBO_YAWN_THRESHOLD   = 2         # >= 2 lần ngáp trong window
 
 # --- Misc ---------------------------------------------------------------
 NO_FACE_SECONDS       = 3.0
-YOLO_PERSON_CONF      = 0.45       # confidence cho person detection
+YOLO_PERSON_CONF      = 0.65       # confidence cho person detection (tăng từ 0.45 tránh nhầm đồ vật)
 YOLO_PHONE_CONF       = 0.30       # confidence thấp hơn cho phone (khó detect hơn)
 
 # --- EMA smoothing – TÁCH RIÊNG detection vs display -------------------
@@ -307,12 +307,15 @@ class PersonState:
 
         # --- Head pose (with calibration) ---------------------------------
         self.head_down_cnt   = 0
+        self.head_up_cnt     = 0
         self.head_turn_cnt   = 0
         self.pitch           = 0.0
         self.yaw             = 0.0
         self.roll            = 0.0
         self.smooth_pitch    = 0.0
         self.smooth_yaw      = 0.0
+        self.detect_pitch    = 0.0    # EMA nhanh cho detection (alpha=0.6)
+        self.detect_yaw      = 0.0    # EMA nhanh cho detection (alpha=0.6)
         # Auto-calibration: vài giây đầu đo pitch/yaw baseline (góc cam)
         self._pose_calibration_samples: list[tuple] = []  # (pitch, yaw)
         self._pose_calibrated = False
@@ -383,6 +386,9 @@ class PersonState:
         self.smooth_mar   = av * mar   + (1 - av) * self.smooth_mar
         self.smooth_pitch = av * pitch + (1 - av) * self.smooth_pitch
         self.smooth_yaw   = av * yaw   + (1 - av) * self.smooth_yaw
+        # Detection EMA cho pitch/yaw (phản hồi nhanh, giống EAR/MAR)
+        self.detect_pitch = ad * pitch + (1 - ad) * self.detect_pitch
+        self.detect_yaw   = ad * yaw   + (1 - ad) * self.detect_yaw
         # Raw values
         self.last_ear = ear
         self.last_mar = mar
@@ -427,11 +433,17 @@ class AudioManager:
         self._stop_queue = queue.Queue()
 
     def play(self):
+        # Nếu thread cũ đã kết thúc, reset trạng thái
+        if self._alarm_on and self._thread and not self._thread.is_alive():
+            self._alarm_on = False
         if self._alarm_on:
             return
         if not os.path.exists(self.sound_path):
             return
         self._alarm_on = True
+        # Clear queue cũ trước khi bắt đầu thread mới
+        while not self._stop_queue.empty():
+            self._stop_queue.get()
         self._thread = Thread(target=self._play_loop, daemon=True)
         self._thread.start()
 
@@ -450,33 +462,37 @@ class AudioManager:
                     pass
 
     def _play_loop(self):
-        if AUDIO_LIB == 'pygame':
-            try:
-                sound = pygame.mixer.Sound(self.sound_path)
+        try:
+            if AUDIO_LIB == 'pygame':
+                try:
+                    sound = pygame.mixer.Sound(self.sound_path)
+                    while self._alarm_on:
+                        if not self._stop_queue.empty():
+                            self._stop_queue.get()
+                            pygame.mixer.stop()
+                            return
+                        sound.play()
+                        # Check dừng mỗi 50ms thay vì chờ hết bài
+                        while pygame.mixer.get_busy():
+                            if not self._alarm_on or not self._stop_queue.empty():
+                                pygame.mixer.stop()
+                                return
+                            pygame.time.wait(50)
+                except Exception as e:
+                    print(f"[AUDIO] pygame error: {e}")
+            elif AUDIO_LIB == 'playsound':
                 while self._alarm_on:
                     if not self._stop_queue.empty():
                         self._stop_queue.get()
-                        pygame.mixer.stop()
-                        return
-                    sound.play()
-                    # Check dừng mỗi 50ms thay vì chờ hết bài
-                    while pygame.mixer.get_busy():
-                        if not self._alarm_on or not self._stop_queue.empty():
-                            pygame.mixer.stop()
-                            return
-                        pygame.time.wait(50)
-            except Exception as e:
-                print(f"[AUDIO] pygame error: {e}")
-        elif AUDIO_LIB == 'playsound':
-            while self._alarm_on:
-                if not self._stop_queue.empty():
-                    self._stop_queue.get()
-                    break
-                try:
-                    _playsound.playsound(self.sound_path)
-                except Exception as e:
-                    print(f"[AUDIO] playsound error: {e}")
-                    break
+                        break
+                    try:
+                        _playsound.playsound(self.sound_path)
+                    except Exception as e:
+                        print(f"[AUDIO] playsound error: {e}")
+                        break
+        finally:
+            # LUÔN reset _alarm_on khi thread kết thúc (dù lý do gì)
+            self._alarm_on = False
 
 
 # =============================================================================
@@ -697,48 +713,35 @@ class FacialAnalyzer:
         h_dist = np.linalg.norm(pt(78) - pt(308))
         return (v1 + v2 + v3) / (3.0 * max(h_dist, 1e-6))
 
-    # ── Head Pose ────────────────────────────────────────────────────────
-    def _solve_head_pose(self, image_pts_6, frame_shape):
+    # ── Head Pose (Landmark-based) ──────────────────────────────────────
+    @staticmethod
+    def _landmark_head_pose(lms, w, h):
         """
-        Tính pitch, yaw, roll từ 6 điểm ảnh.
-        Thứ tự: nose, chin, L_eye, R_eye, L_mouth, R_mouth
+        Tính pitch, yaw từ tỷ lệ vị trí mũi so với khung mặt.
+        Chính xác và ổn định hơn solvePnP cho webcam.
+        - pitch dương = cúi đầu, âm = ngẩng đầu
+        - yaw dương = quay phải (từ góc camera), âm = quay trái
         """
-        h, w = frame_shape[:2]
-        focal = w * FOCAL_LENGTH_RATIO  # cải thiện ước lượng focal length
-        cam_matrix = np.array([
-            [focal, 0,     w / 2],
-            [0,     focal, h / 2],
-            [0,     0,     1    ]
-        ], dtype=np.float64)
-        dist_coeffs = np.zeros((4, 1))
+        nose      = lms[4]
+        forehead  = lms[10]
+        chin      = lms[152]
+        left_ch   = lms[234]
+        right_ch  = lms[454]
 
-        success, rvec, tvec = cv2.solvePnP(
-            self.MODEL_POINTS,
-            np.array(image_pts_6, dtype=np.float64),
-            cam_matrix, dist_coeffs,
-            flags=cv2.SOLVEPNP_ITERATIVE
-        )
-        if not success:
-            return 0.0, 0.0, 0.0
+        nose_x, nose_y = nose.x * w, nose.y * h
+        face_h = max(chin.y * h - forehead.y * h, 1.0)
+        face_w = max(right_ch.x * w - left_ch.x * w, 1.0)
+        center_y = (forehead.y * h + chin.y * h) / 2.0
+        center_x = (left_ch.x * w + right_ch.x * w) / 2.0
 
-        rmat, _ = cv2.Rodrigues(rvec)
-        euler, _, _, _, _, _ = cv2.RQDecomp3x3(rmat)
-        pitch = float(euler[0])
-        yaw   = float(euler[1])
-        roll  = float(euler[2])
+        pitch = (nose_y - center_y) / face_h * 180.0
+        yaw   = (nose_x - center_x) / face_w * 180.0
 
-        # Fix: RQDecomp3x3 có thể trả pitch bị lệch ±180°
-        # Ví dụ: nhìn thẳng → pitch = -137° thay vì ~0°
-        if pitch > 90:
-            pitch = pitch - 180
-        elif pitch < -90:
-            pitch = pitch + 180
-        if yaw > 90:
-            yaw = yaw - 180
-        elif yaw < -90:
-            yaw = yaw + 180
+        # Clamp để tránh giá trị vô lý khi mặt gần profile
+        pitch = max(-60.0, min(60.0, pitch))
+        yaw   = max(-60.0, min(60.0, yaw))
 
-        return pitch, yaw, roll
+        return pitch, yaw, 0.0
 
     # ── Gaze ratio (MediaPipe iris) ─────────────────────────────────────
     def _gaze_ratio_mp(self, lms, w, h):
@@ -798,10 +801,8 @@ class FacialAnalyzer:
 
             mar = self._mar_mp(lms, w, h)
 
-            # Head pose
-            hp_indices = [4, 152, 33, 263, 57, 287]
-            image_pts = [(lms[i].x * w, lms[i].y * h) for i in hp_indices]
-            pitch, yaw, roll = self._solve_head_pose(image_pts, frame.shape)
+            # Head pose (landmark-based — ổn định hơn solvePnP)
+            pitch, yaw, roll = self._landmark_head_pose(lms, w, h)
 
             # Gaze ratio từ iris
             gaze_ratio = self._gaze_ratio_mp(lms, w, h)
@@ -847,11 +848,19 @@ class FacialAnalyzer:
             mouth_all = pts[48:68]
             mar = self._mar_dlib(mouth_all)
 
-            # Head pose
-            image_pts = [
-                pts[30], pts[8], pts[36], pts[45], pts[48], pts[54]
-            ]
-            pitch, yaw, roll = self._solve_head_pose(image_pts, frame.shape)
+            # Head pose (Dlib fallback — dùng tỷ lệ landmark)
+            nose_x, nose_y = pts[30]
+            chin_x, chin_y = pts[8]
+            fore_x, fore_y = pts[27]  # bridge of nose (gần trán)
+            lc_x = pts[0][0]   # left jaw
+            rc_x = pts[16][0]  # right jaw
+            face_h = max(chin_y - fore_y, 1.0)
+            face_w = max(rc_x - lc_x, 1.0)
+            center_y = (fore_y + chin_y) / 2.0
+            center_x = (lc_x + rc_x) / 2.0
+            pitch = max(-60.0, min(60.0, (nose_y - center_y) / face_h * 180.0))
+            yaw   = max(-60.0, min(60.0, (nose_x - center_x) / face_w * 180.0))
+            roll  = 0.0
 
             bbox = (rect.left(), rect.top(), rect.right(), rect.bottom())
 
@@ -1190,9 +1199,9 @@ class BehaviorAnalyzer:
         # Dùng detect EMA (phản hồi nhanh) cho logic cảnh báo
         d_ear   = st.detect_ear
         d_mar   = st.detect_mar
-        # Head pose: trừ baseline để bù góc camera
-        s_pitch = st.smooth_pitch - st.pitch_baseline
-        s_yaw   = st.smooth_yaw  - st.yaw_baseline
+        # Head pose: dùng detect EMA (nhanh) thay vì smooth (chậm), trừ baseline bù góc camera
+        s_pitch = st.detect_pitch - st.pitch_baseline
+        s_yaw   = st.detect_yaw  - st.yaw_baseline
 
         # ── 1. EAR: Blink / Drowsy / Microsleep (TIME-BASED) ────────────
         ear_thresh = st.ear_threshold  # adaptive per person
@@ -1273,7 +1282,7 @@ class BehaviorAnalyzer:
         if s_pitch > PITCH_DOWN_THRESH:
             st.head_down_cnt += 1
         else:
-            st.head_down_cnt = max(0, st.head_down_cnt - 2)
+            st.head_down_cnt = max(0, st.head_down_cnt - 3)  # decay nhanh hơn
 
         if st.head_down_cnt >= HEAD_POSE_FRAMES:
             # Combo: cúi đầu + mắt nhắm → ngủ gục (HIGH)
@@ -1286,11 +1295,21 @@ class BehaviorAnalyzer:
                 alerts.append(AlertEvent("HEAD_DOWN", SEVERITY_MEDIUM,
                     f"Cúi đầu (pitch={s_pitch:.1f}°)", person_id))
 
+        # ── 3b. Head up (ngẩng đầu) ──────────────────────────────────────
+        if s_pitch < PITCH_UP_THRESH:
+            st.head_up_cnt += 1
+        else:
+            st.head_up_cnt = max(0, st.head_up_cnt - 3)
+
+        if st.head_up_cnt >= HEAD_POSE_FRAMES:
+            alerts.append(AlertEvent("HEAD_UP", SEVERITY_MEDIUM,
+                f"Ngẩng đầu (pitch={s_pitch:.1f}°)", person_id))
+
         # ── 4. Head turn ─────────────────────────────────────────────────
         if abs(s_yaw) > YAW_THRESH:
             st.head_turn_cnt += 1
         else:
-            st.head_turn_cnt = max(0, st.head_turn_cnt - 2)
+            st.head_turn_cnt = max(0, st.head_turn_cnt - 3)  # decay nhanh hơn
 
         if st.head_turn_cnt >= HEAD_POSE_FRAMES:
             direction = "trái" if s_yaw < 0 else "phải"
@@ -1354,6 +1373,7 @@ class OverlayRenderer:
         "MICROSLEEP":   "Ngủ sâu",
         "YAWNING":      "Ngáp",
         "HEAD_DOWN":    "Cúi đầu",
+        "HEAD_UP":      "Ngẩng đầu",
         "HEAD_TURN":    "Quay đầu",
         "PHONE_USE":    "Điện thoại",
         "DISTRACTED":   "Mất tập trung",
@@ -1403,8 +1423,10 @@ class OverlayRenderer:
                         COLOR_WHITE, 1, cv2.LINE_AA)
             y += 14
 
+            dp = st.detect_pitch - st.pitch_baseline
+            dy = st.detect_yaw - st.yaw_baseline
             cv2.putText(frame,
-                        f"MAR:{st.smooth_mar:.2f}  P:{st.smooth_pitch:.0f} Y:{st.smooth_yaw:.0f}",
+                        f"MAR:{st.smooth_mar:.2f}  P:{dp:.1f} Y:{dy:.1f}",
                         (10, y), cv2.FONT_HERSHEY_SIMPLEX, 0.38,
                         COLOR_WHITE, 1, cv2.LINE_AA)
             y += 14
@@ -1584,7 +1606,8 @@ class BehaviorDetector:
         self.all_alerts     = []
 
         self._last_alert_time: dict[str, float] = {}
-        self._alert_cooldown = 8.0
+        self._alert_cooldown = 5.0              # hạ từ 8s → 5s
+        self._alert_active: set[str] = set()    # track alert đang active (liên tục)
         self._alarm_clear_counter = 0          # hysteresis: frames liên tiếp không có high alert
         self._ALARM_CLEAR_FRAMES  = 2          # cần 2 frame sạch liên tiếp → dừng alarm gần như ngay
 
@@ -1595,8 +1618,19 @@ class BehaviorDetector:
         print("=" * 65)
 
     def _should_log_alert(self, alert_type: str) -> bool:
+        """Cooldown thông minh: chỉ chặn khi alert liên tục (cùng sự kiện chưa kết thúc).
+        Khi alert kết thúc rồi xuất hiện lại → log ngay (sự kiện mới)."""
         now = time.time()
         last = self._last_alert_time.get(alert_type, 0)
+        was_active = alert_type in self._alert_active
+        self._alert_active.add(alert_type)
+
+        if not was_active:
+            # Sự kiện MỚI (trước đó không active) → log ngay
+            self._last_alert_time[alert_type] = now
+            return True
+
+        # Sự kiện đang tiếp diễn → cooldown bình thường
         if now - last > self._alert_cooldown:
             self._last_alert_time[alert_type] = now
             return True
@@ -1662,8 +1696,9 @@ class BehaviorDetector:
         if self.yolo and self.yolo.available:
             frame = self.yolo.draw_detections(frame, persons, phones)
 
-        # Dùng faces (facial detections) để nhận biết nhiều người — hoạt động cả khi tắt YOLO
-        n_detected = max(len(persons), len(faces))
+        # Đếm người: ưu tiên faces (MediaPipe, chính xác hơn YOLO cho person)
+        # Chỉ dùng YOLO person count khi không có face detection
+        n_detected = len(faces) if len(faces) > 0 else len(persons)
         if n_detected > 1:
             frame = self.renderer.draw_multi_person_warning(frame, n_detected)
 
@@ -1672,6 +1707,8 @@ class BehaviorDetector:
         log_alerts     = []
         raw_high       = []
         visible_pids   = set()
+        # Lưu alert keys frame này để clear _alert_active cuối frame
+        current_frame_alert_keys: set[str] = set()
 
         for fi, (face_data, pid) in enumerate(zip(faces, person_ids)):
             visible_pids.add(pid)
@@ -1686,9 +1723,11 @@ class BehaviorDetector:
 
             for alert in beh_alerts:
                 display_alerts.append(alert)
+                alert_key = f"{pid}_{alert.behavior_type}"
+                current_frame_alert_keys.add(alert_key)
                 if alert.severity in (SEVERITY_HIGH, SEVERITY_CRITICAL):
                     raw_high.append(alert)
-                if self._should_log_alert(f"{pid}_{alert.behavior_type}"):
+                if self._should_log_alert(alert_key):
                     log_alerts.append(alert)
                     self.all_alerts.append(alert)
 
@@ -1706,6 +1745,15 @@ class BehaviorDetector:
             display_alerts.append(alert)
             if self._should_log_alert(f"{alert.person_id}_NO_FACE"):
                 log_alerts.append(alert)
+
+        # Clear alert_active cho những alert không còn trong frame này
+        # → lần xuất hiện tiếp theo sẽ được coi là sự kiện MỚI
+        # Thêm multi-person và no-face keys
+        if n_detected > 1:
+            current_frame_alert_keys.add("MULTI_PERSON")
+        for alert in nf_alerts:
+            current_frame_alert_keys.add(f"{alert.person_id}_NO_FACE")
+        self._alert_active = self._alert_active & current_frame_alert_keys
 
         # 7. Audio (hysteresis: tránh flutter khi alert không ổn định)
         if raw_high:
@@ -1794,6 +1842,7 @@ class BehaviorDetector:
                 self.behavior.states.clear()
                 self.tracker = FaceTracker()
                 self._last_alert_time.clear()
+                self._alert_active.clear()
                 print("[RESET]")
             elif key == ord('s'):
                 ts = datetime.now().strftime("%Y%m%d_%H%M%S")
