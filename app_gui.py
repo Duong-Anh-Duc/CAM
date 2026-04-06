@@ -13,7 +13,7 @@ Chạy:
 """
 
 import tkinter as tk
-from tkinter import ttk, messagebox
+from tkinter import ttk, messagebox, simpledialog
 from PIL import Image, ImageTk
 import cv2
 import numpy as np
@@ -27,7 +27,7 @@ from collections import Counter, deque
 # ── Import BehaviorDetector ───────────────────────────────────────────────────
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 from behavior_detector import (
-    BehaviorDetector, AlertEvent,
+    BehaviorDetector, AlertEvent, FaceDatabase,
     YOLO_AVAILABLE, DLIB_AVAILABLE, AUDIO_LIB,
     SEVERITY_LOW, SEVERITY_MEDIUM, SEVERITY_HIGH, SEVERITY_CRITICAL,
 )
@@ -156,6 +156,11 @@ class CAMApp:
                                      command=self._toggle_record,
                                      font=("Helvetica", 10))
         self.btn_record.pack(side=tk.LEFT, padx=6)
+
+        self.btn_register = tk.Button(self.toolbar, text="Đăng ký học sinh",
+                                      command=self._register_face,
+                                      font=("Helvetica", 10), fg="#4361ee")
+        self.btn_register.pack(side=tk.LEFT, padx=6)
 
         self.btn_theme = tk.Button(self.toolbar, text="Theme",
                                    command=self._toggle_theme, width=5,
@@ -520,7 +525,8 @@ class CAMApp:
             if not st.face_visible and (time.time() - st.last_face_seen > 10):
                 continue
             status = "[V] " if st.face_visible else "[X]"
-            lines.append(f"{status} Học sinh #{pid + 1}")
+            pname = self.detector.get_person_name(pid) if self.detector else f"Học sinh #{pid + 1}"
+            lines.append(f"{status} {pname}")
             lines.append(f"   EAR: {st.smooth_ear:.3f}  "
                          f"MAR: {st.smooth_mar:.3f}")
             lines.append(f"   Pitch: {st.smooth_pitch:.0f}° "
@@ -543,7 +549,12 @@ class CAMApp:
         prefix = {"LOW": "[OK]", "MEDIUM": "[!!]",
                   "HIGH": "[!!]", "CRITICAL": "[XX]"}.get(alert.severity, "[--]")
         vn = VN_LABELS.get(alert.behavior_type, alert.behavior_type)
-        pid_str = f"Học sinh #{alert.person_id + 1}" if alert.person_id >= 0 else ""
+        if alert.person_id >= 0 and self.detector:
+            pid_str = self.detector.get_person_name(alert.person_id)
+        elif alert.person_id >= 0:
+            pid_str = f"Học sinh #{alert.person_id + 1}"
+        else:
+            pid_str = ""
         text = f"{prefix} [{t}] {pid_str} - {vn}: {alert.message}"
         self.alert_listbox.insert(0, text)
         # Giới hạn 200 dòng
@@ -553,6 +564,44 @@ class CAMApp:
     # =====================================================================
     # ACTIONS
     # =====================================================================
+    def _register_face(self):
+        """Đăng ký khuôn mặt học sinh live từ camera."""
+        if not self.running or not self.detector:
+            messagebox.showinfo("Thông báo",
+                "Cần bắt đầu giám sát trước khi đăng ký.")
+            return
+
+        # Nhập tên
+        name = simpledialog.askstring("Đăng ký học sinh",
+            "Nhập tên học sinh (nhìn thẳng vào camera):",
+            parent=self.root)
+        if not name or not name.strip():
+            return
+        name = name.strip()
+
+        # Chụp frame hiện tại
+        if not self.cap or not self.cap.isOpened():
+            messagebox.showerror("Lỗi", "Camera chưa mở.")
+            return
+
+        ret, frame = self.cap.read()
+        if not ret:
+            messagebox.showerror("Lỗi", "Không đọc được frame từ camera.")
+            return
+
+        # Đăng ký
+        success = self.detector.register_face(frame, name)
+        if success:
+            count = len(self.detector.face_db.entries.get(name, []))
+            messagebox.showinfo("Thành công",
+                f"Đã đăng ký '{name}' ({count} mẫu).\n"
+                f"Có thể đăng ký thêm để tăng độ chính xác.")
+            self.statusbar.configure(text=f"Đã đăng ký: {name}")
+        else:
+            messagebox.showwarning("Không thành công",
+                "Không phát hiện khuôn mặt.\n"
+                "Hãy nhìn thẳng vào camera và thử lại.")
+
     def _screenshot(self):
         if not self.running:
             messagebox.showinfo("Thông báo", "Chưa bắt đầu giám sát.")

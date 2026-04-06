@@ -1159,6 +1159,79 @@ class FaceTracker:
 
 
 # =============================================================================
+# FACE DATABASE – đăng ký & nhận diện tên học sinh (FaceNet embedding)
+# =============================================================================
+class FaceDatabase:
+    """Lưu trữ tên + embedding học sinh. Không cần train — chỉ so sánh khoảng cách."""
+
+    def __init__(self, db_path: str = None):
+        if db_path is None:
+            db_path = os.path.join(_BASE_DIR, "face_db.pkl")
+        self.db_path = db_path
+        # {name: [embedding1, embedding2, ...]}
+        self.entries: dict[str, list[np.ndarray]] = {}
+        self._load()
+
+    def _load(self):
+        """Load database từ file."""
+        import pickle
+        if os.path.exists(self.db_path):
+            try:
+                with open(self.db_path, 'rb') as f:
+                    self.entries = pickle.load(f)
+                print(f"[FaceDB] Đã load {len(self.entries)} học sinh từ {self.db_path}")
+            except Exception as e:
+                print(f"[FaceDB] Lỗi load: {e}")
+                self.entries = {}
+        else:
+            print("[FaceDB] Chưa có database — dùng 'Đăng ký học sinh' để thêm")
+
+    def save(self):
+        """Lưu database ra file."""
+        import pickle
+        try:
+            with open(self.db_path, 'wb') as f:
+                pickle.dump(self.entries, f)
+            print(f"[FaceDB] Đã lưu {len(self.entries)} học sinh")
+        except Exception as e:
+            print(f"[FaceDB] Lỗi lưu: {e}")
+
+    def register(self, name: str, embedding: np.ndarray):
+        """Đăng ký 1 embedding cho tên học sinh."""
+        if name not in self.entries:
+            self.entries[name] = []
+        self.entries[name].append(embedding)
+        self.save()
+        print(f"[FaceDB] Đăng ký '{name}' — tổng {len(self.entries[name])} mẫu")
+
+    def remove(self, name: str):
+        """Xóa học sinh khỏi database."""
+        if name in self.entries:
+            del self.entries[name]
+            self.save()
+
+    def identify(self, embedding: np.ndarray, threshold: float = 0.75) -> str | None:
+        """Nhận diện tên từ embedding. Trả None nếu không khớp ai."""
+        if embedding is None or len(self.entries) == 0:
+            return None
+        best_name = None
+        best_dist = float('inf')
+        for name, emb_list in self.entries.items():
+            for stored_emb in emb_list:
+                dist = float(np.linalg.norm(embedding - stored_emb))
+                if dist < best_dist:
+                    best_dist = dist
+                    best_name = name
+        if best_dist < threshold:
+            return best_name
+        return None
+
+    def get_names(self) -> list[str]:
+        """Danh sách tên đã đăng ký."""
+        return list(self.entries.keys())
+
+
+# =============================================================================
 # BEHAVIOR ANALYZER – logic cảnh báo (dùng smooth values)
 # =============================================================================
 class BehaviorAnalyzer:
@@ -1600,6 +1673,10 @@ class BehaviorDetector:
         self.tracker  = FaceTracker()
         self.renderer = OverlayRenderer()
         self.audio    = AudioManager(sound_path)
+        self.face_db  = FaceDatabase()
+
+        # pid -> tên học sinh (cache để không query DB mỗi frame)
+        self.pid_names: dict[int, str] = {}
 
         self.session_start  = datetime.now()
         self.frame_count    = 0
@@ -1616,6 +1693,30 @@ class BehaviorDetector:
         print(f"  Dlib      : {'OK Active' if DLIB_AVAILABLE else 'OFF'}")
         print(f"  Audio     : {'OK ' + AUDIO_LIB if AUDIO_LIB else 'OFF'}")
         print("=" * 65)
+
+    def get_person_name(self, pid: int) -> str:
+        """Lấy tên học sinh. Trả 'Học sinh #N' nếu chưa đăng ký."""
+        return self.pid_names.get(pid, f"Học sinh #{pid + 1}")
+
+    def register_face(self, frame: np.ndarray, name: str) -> bool:
+        """Đăng ký khuôn mặt từ frame hiện tại. Trả True nếu thành công."""
+        faces = self.analyzer.analyze(frame)
+        if not faces:
+            return False
+        bbox = faces[0].get('bbox')
+        if not bbox:
+            return False
+        emb = self.tracker._compute_embedding(frame, bbox)
+        if emb is None:
+            return False
+        self.face_db.register(name, emb)
+        # Cập nhật cache nếu đang tracking
+        for pid, stored_emb in self.tracker._embeddings.items():
+            dist = float(np.linalg.norm(emb - stored_emb))
+            if dist < 0.75:
+                self.pid_names[pid] = name
+                break
+        return True
 
     def _should_log_alert(self, alert_type: str) -> bool:
         """Cooldown thông minh: chỉ chặn khi alert liên tục (cùng sự kiện chưa kết thúc).
@@ -1714,6 +1815,14 @@ class BehaviorDetector:
             visible_pids.add(pid)
             yolo_pi = face_to_yolo.get(fi, -1)
             phones_this = phone_map.get(yolo_pi, [])
+
+            # Nhận diện tên từ FaceDB (chỉ query khi chưa có tên cho pid)
+            if pid not in self.pid_names and self.face_db.entries:
+                emb = self.tracker._embeddings.get(pid)
+                if emb is not None:
+                    name = self.face_db.identify(emb)
+                    if name:
+                        self.pid_names[pid] = name
 
             beh_alerts = self.behavior.analyze(pid, face_data, phones_this)
 
